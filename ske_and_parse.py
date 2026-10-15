@@ -223,21 +223,21 @@ def tree_parse_test(label_root,file_path,save_root,save_root2):
 
 if __name__ == '__main__':
 
-    # label_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
-    # file_path = './data/base_dict.json'
-    # save_root = './data/tree_parse'
-    # save_root2 = './data/skeleton'
+    label_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
+    file_path = './data/base_dict.json'
+    save_root = './data/tree_parse'
+    save_root2 = './data/skeleton'
 
-    # tree_parse(label_root, file_path, save_root, save_root2)
+    tree_parse(label_root, file_path, save_root, save_root2)
 
-    # label_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
-    # file_path = './data/base_dict.json'
-    # save_root = './data/tree_parse_val'
-    # save_root2 = './data/skeleton_val'
+    label_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
+    file_path = './data/base_dict.json'
+    save_root = './data/tree_parse_val'
+    save_root2 = './data/skeleton_val'
 
-    # tree_parse_val(label_root, file_path, save_root, save_root2)
+    tree_parse_val(label_root, file_path, save_root, save_root2)
 
-    label_root = r'F:\datasets\ATM22\TrainBatch1\after\mask'
+    label_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
     file_path = './data/test.json'
     save_root = './data/tree_parse_test'
     save_root2 = './data/skeleton_test'

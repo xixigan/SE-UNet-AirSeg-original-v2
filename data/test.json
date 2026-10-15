@@ -1,14 +1,14 @@
 {
  "test": [
-  "CASE008.mha",
-  "CASE009.mha",
-  "CASE002.mha",
-  "CASE006.mha",
-  "CASE004.mha",
-  "CASE005.mha",
+  "CASE026.mha",
+  "CASE032.mha",
+  "CASE033.mha",
+  "CASE017.mha",
   "CASE003.mha",
-  "CASE001.mha",
-  "CASE010.mha",
-  "CASE007.mha"
+  "CASE027.mha",
+  "CASE058.mha",
+  "CASE050.mha",
+  "CASE025.mha",
+  "CASE056.mha"
  ]
 }

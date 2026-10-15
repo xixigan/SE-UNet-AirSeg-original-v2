@@ -9,7 +9,7 @@ import random
 
 
 
-inputpath = r'F:\datasets\ATM22\TrainBatch1\after\mask'
+inputpath = r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask'
 
 flist0=os.listdir(inputpath)
 flist0.sort()
@@ -21,8 +21,8 @@ train_list=[]
 val_list=[]
 test_list=[]
 
-trainnum=0
-valnum=0
+trainnum=40
+valnum=10
 testnum=10
 for f in flist[0:trainnum]:
     train_list.append(f.split('mask')[0]+'.mha')
