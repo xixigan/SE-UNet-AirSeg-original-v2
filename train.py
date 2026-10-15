@@ -270,6 +270,13 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
                                                                       current_date.minute)
     writer = SummaryWriter(str(log_root))
 
+    # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
+    # 可直接用 Excel/pandas 打开画 loss 曲线；追加模式，文件不存在时先写表头
+    loss_csv_path = os.path.splitext(log_savepath)[0] + '_train_losses.csv'
+    if not os.path.exists(loss_csv_path):
+        with open(loss_csv_path, 'a') as csv_f:
+            csv_f.writelines('epoch,iter,step,loss,GUL_encode,GUL_decode,break_loss\n')
+
     def worker_init_fn(worker_id):
         np.random.seed(1 + worker_id)   # 多进程下各 worker 随机种子独立（当前 num_workers=0，未生效）
 
@@ -319,6 +326,50 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                         milestones=[40, 60],
                                                         gamma=0.1)  # 第 40/60 步把学习率乘 0.1（当前每 epoch step 两次，实际约第 20 epoch 就衰减）
+
+    # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
+    save_hyperparams(model_savepath, 'hyperparams_stage_three.json', {
+        'stage': 3,
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'train': {
+            'max_epoches': max_epoches,
+            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
+            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData3 注释
+            'num_workers': 0,
+            'cube_size': 128,
+            'aug': aug,
+            'optimizer': 'AdamW',
+            'lr': 0.0001,
+            'scheduler': 'MultiStepLR',
+            'milestones': [40, 60],
+            'gamma': 0.1,
+            'loss': 'general_union_loss_lib(alpha=0.2) + atr_loss(break_loss, 仅骨架区域, weight 融合 BR_weight)',
+            'online_hard_mining': {
+                'enabled': True,
+                'cache_dir': online_savepath,
+                'limits_ratio': 0.3,                    # 缓存上限 = 病例数 x batch x 0.3, 只留最难的前 30%
+                'cached_channels': ['image', 'label', 'weight', 'skel'],
+            },
+            'start_model': start_model,                 # 热启动来源(stage2 权重目录)
+            'start_epoch': start_epoch,
+        },
+        'validation': {
+            'DTI': DTI,
+            'cube_size': 128,
+            'step': 64,
+            'batch_size': 1,
+            'fixed_threshold': 0.5,                     # DTI=0 时使用
+            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
+            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+        },
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
+                 'pred2_path': pred2_path, 'br_skel_path': br_skel_path,
+                 'BR_weight_path': BR_weight_path},
+        'paths': {'model_savepath': model_savepath, 'online_savepath': online_savepath,
+                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root},
+        'gpu': gpu,
+    })
+
     # resume
     # weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_9.pth'))
     # 从【上一阶段】的权重热启动：stage3 用 stage2 选出的最佳 epoch 权重
@@ -415,9 +466,14 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
             # 写 TensorBoard：add_scalars 会把 4 个值画在同一张图的 4 条曲线上
             # 横轴用全局 iter 序号(iter + ep*病例数)，保证跨 epoch 曲线连续
             writer.add_scalars('Train', {'loss': loss.item(),'GUL_encode': dice_loss_en.item(),'GUL_decode': dice_loss_de.item(),'break_loss': break_loss.item()}, iter + ep * len(train_dataset))
+            # 同一批数值同步写 CSV，一行 = 一次迭代；step 列与 TensorBoard 横轴一致
+            with open(loss_csv_path, 'a') as csv_f:
+                csv_f.writelines(','.join([str(ep), str(iter), str(iter + ep * len(train_dataset)),
+                                           str(loss.item()), str(dice_loss_en.item()),
+                                           str(dice_loss_de.item()), str(break_loss.item())]) + '\n')
         torch.cuda.empty_cache()   # 归还本 epoch 缓存的显存碎片
 
-        writer.close()                  # 注意：此处 close 在 epoch 循环内，导致 epoch>=1 的曲线可能丢失
+        # writer.close() 原先写在这里(epoch 循环内)，导致每个 epoch 重建事件文件；已挪到函数末尾统一关闭
         lr_scheduler.step()             # 学习率衰减(第 1 次 step)
         # '''
         # ============ 第二遍：把本 epoch 攒下的难例读回来再训一遍 ============
@@ -484,6 +540,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
             model.module.state_dict(),
             os.path.join(model_savepath, 'SE_UNet_' + str(ep) + '.pth'))
         # print(ep, ':', time.time() - starttime)
+    writer.close()   # 训练结束统一关闭 TensorBoard writer(整个 run 只生成一套事件文件)
     sdf = 2   # 无意义的占位变量(原代码遗留)，可删除
 
 def train2(data_root,
@@ -523,6 +580,12 @@ def train2(data_root,
                                                                       current_date.minute)
     writer = SummaryWriter(str(log_root))
 
+    # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
+    # 可直接用 Excel/pandas 打开画 loss 曲线；追加模式，文件不存在时先写表头
+    loss_csv_path = os.path.splitext(log_savepath)[0] + '_train_losses.csv'
+    if not os.path.exists(loss_csv_path):
+        with open(loss_csv_path, 'a') as csv_f:
+            csv_f.writelines('epoch,iter,step,loss,dice_loss_encode,dice_loss_decode\n')
 
     def worker_init_fn(worker_id):
         np.random.seed(1 + worker_id)
@@ -565,6 +628,47 @@ def train2(data_root,
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                         milestones=[40, 60],
                                                         gamma=0.1)
+
+    # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
+    save_hyperparams(model_savepath, 'hyperparams_stage_two.json', {
+        'stage': 2,
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'train': {
+            'max_epoches': max_epoches,
+            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
+            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData 注释
+            'num_workers': 0,
+            'cube_size': 128,
+            'aug': aug,
+            'optimizer': 'AdamW',
+            'lr': 0.0001,
+            'scheduler': 'MultiStepLR',
+            'milestones': [40, 60],
+            'gamma': 0.1,
+            'loss': 'general_union_loss_lib(加权根号Tversky, alpha=0.2, beta=0.8, en+de 两路)',
+            'online_hard_mining': {
+                'enabled': True,
+                'cache_dir': online_savepath,
+                'limits_ratio': 0.3,                    # 缓存上限 = 病例数 x batch x 0.3, 只留最难的前 30%
+            },
+            'start_model': start_model,                 # 热启动来源(stage1 权重目录)
+            'start_epoch': start_epoch,
+        },
+        'validation': {
+            'DTI': DTI,
+            'cube_size': 128,
+            'step': 64,
+            'batch_size': 1,
+            'fixed_threshold': 0.5,                     # DTI=0 时使用
+            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
+            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+        },
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
+                 'pred_path(难例定位来源)': pred_path},
+        'paths': {'model_savepath': model_savepath, 'online_savepath': online_savepath,
+                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root},
+        'gpu': gpu,
+    })
 
     # resume
     # weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_63.pth'))
@@ -643,9 +747,14 @@ def train2(data_root,
                       dice_loss_de.item())
 
             writer.add_scalars('Train', {'loss': loss.item(), 'dice_loss_encode': dice_loss_en.item(),'dice_loss_decode': dice_loss_de.item()}, iter + ep * len(train_dataset))
+            # 同一批数值同步写 CSV，一行 = 一次迭代；step 列与 TensorBoard 横轴一致
+            with open(loss_csv_path, 'a') as csv_f:
+                csv_f.writelines(','.join([str(ep), str(iter), str(iter + ep * len(train_dataset)),
+                                           str(loss.item()), str(dice_loss_en.item()),
+                                           str(dice_loss_de.item())]) + '\n')
         torch.cuda.empty_cache()
 
-        writer.close()             # 注意：close 在 epoch 循环内，epoch>=1 的曲线可能丢失(同 train3)
+        # writer.close() 原先写在这里(epoch 循环内)，导致每个 epoch 重建事件文件；已挪到函数末尾统一关闭
 
         lr_scheduler.step()        # 学习率衰减(第 1 次 step)
 
@@ -705,6 +814,7 @@ def train2(data_root,
             model.module.state_dict(),
             os.path.join(model_savepath, 'SE_UNet_' + str(ep) + '.pth'))
         # print(ep, ':', time.time() - starttime)
+    writer.close()   # 训练结束统一关闭 TensorBoard writer(整个 run 只生成一套事件文件)
     sdf = 2
 
 def train(data_root,model_savepath,
@@ -735,7 +845,12 @@ def train(data_root,model_savepath,
                                                                       current_date.minute)
     writer = SummaryWriter(str(log_root))
 
-
+    # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
+    # 可直接用 Excel/pandas 打开画 loss 曲线；追加模式，文件不存在时先写表头
+    loss_csv_path = os.path.splitext(log_savepath)[0] + '_train_losses.csv'
+    if not os.path.exists(loss_csv_path):
+        with open(loss_csv_path, 'a') as csv_f:
+            csv_f.writelines('epoch,iter,step,loss,dice_loss_encode,dice_loss_decode\n')
 
     def worker_init_fn(worker_id):
         np.random.seed(1 + worker_id)
@@ -779,6 +894,39 @@ def train(data_root,model_savepath,
                                                         milestones=[60, 90],   # stage1 轮数多，衰减点相应后移
                                                         gamma=0.1)
 
+    # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
+    save_hyperparams(model_savepath, 'hyperparams_stage_one.json', {
+        'stage': 1,
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'train': {
+            'max_epoches': max_epoches,
+            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
+            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData 注释
+            'num_workers': 0,
+            'cube_size': 128,                           # CropSegData 内部随机裁剪的 patch 边长
+            'aug': aug,                                 # 1=开启随机翻转增强
+            'optimizer': 'AdamW',
+            'lr': 0.0001,
+            'scheduler': 'MultiStepLR',
+            'milestones': [60, 90],
+            'gamma': 0.1,
+            'loss': 'dice_loss(无权重, en+de 两路等权相加)',
+        },
+        'validation': {
+            'DTI': DTI,                                 # 1=双阈值后处理, 0=固定 0.5 阈值
+            'cube_size': 128,
+            'step': 64,
+            'batch_size': 1,
+            'fixed_threshold': 0.5,                     # DTI=0 时使用
+            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
+            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+        },
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
+        'paths': {'model_savepath': model_savepath, 'log_savepath': log_savepath,
+                  'tensorboard_logdir': log_root},
+        'gpu': gpu,
+    })
+
     # resume
     # weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_27.pth'))
     # model.load_state_dict(weights_dict, strict=False)
@@ -820,8 +968,13 @@ def train(data_root,model_savepath,
 
             # break
             writer.add_scalars('Train', {'loss': loss.item(), 'dice_loss_encode': dice_loss_en.item(),'dice_loss_decode': dice_loss_de.item()}, iter + ep * len(train_dataset))
+            # 同一批数值同步写 CSV，一行 = 一次迭代；step 列与 TensorBoard 横轴一致
+            with open(loss_csv_path, 'a') as csv_f:
+                csv_f.writelines(','.join([str(ep), str(iter), str(iter + ep * len(train_dataset)),
+                                           str(loss.item()), str(dice_loss_en.item()),
+                                           str(dice_loss_de.item())]) + '\n')
 
-        writer.close()
+        # writer.close() 原先写在这里(epoch 循环内)，导致每个 epoch 重建事件文件；已挪到函数末尾统一关闭
         lr_scheduler.step()
 
         print('')
@@ -838,6 +991,7 @@ def train(data_root,model_savepath,
             model.module.state_dict(),
             os.path.join(model_savepath, 'SE_UNet_' + str(ep) + '.pth'))
         # print(ep, ':', time.time() - starttime)
+    writer.close()   # 训练结束统一关闭 TensorBoard writer(整个 run 只生成一套事件文件)
     return max_epoches
 
 def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_root,stage):
@@ -1180,6 +1334,26 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
     model.load_state_dict(weights_dict, strict=False)
     model = torch.nn.DataParallel(model).cuda()
     model.eval()
+
+    # 【超参数落盘】DTI 复验(验证)所用的全部配置单独存 JSON，与训练日志一样保持口径独立、可追溯
+    save_hyperparams(model_savepath, 'hyperparams_dtival_stage_{}.json'.format(stage), {
+        'task': 'DTI 复验(双阈值口径重新评估已训好的 epoch)',
+        'stage': stage,
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
+                  'weights': os.path.join(model_savepath, 'SE_UNet_{}.pth'.format(dtiep)),
+                  'epoch': dtiep},
+        'validation': {
+            'DTI': 1,                                   # 本函数固定用 DTI=1 双阈值后处理口径
+            'cube_size': 128,
+            'step': 64,
+            'batch_size': 1,
+            'dti_h_thresh': 0.5,                        # 种子阈值(见 validation())
+            'dti_l_thresh': 0.4,                        # 生长候选阈值(见 validation())
+        },
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
+        'paths': {'model_savepath': model_savepath, 'dti_log_savepath': dti_log_savepath},
+        'gpu': gpu,
+    })
 
     starttime=time.time()
     print('')

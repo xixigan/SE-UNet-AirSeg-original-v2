@@ -2,6 +2,9 @@ import numpy as np
 import skimage.measure as measure
 import random
 import cc3d
+import os
+import json
+import datetime
 from scipy import ndimage
 from scipy.ndimage.morphology import binary_fill_holes
 import SimpleITK as sitk
@@ -148,3 +151,24 @@ def large_connected_domain26(label):
     label = ndimage.binary_fill_holes(label)
     label = label.astype(np.uint8)
     return label
+
+
+def save_hyperparams(save_dir, filename, config):
+    """
+    把一次运行(训练/验证/测试)所用的超参数与关键配置落盘为 JSON 文件，
+    便于实验复现与结果追溯。train.py / test.py 通过 `from util import *` 使用本函数。
+
+    :param save_dir : 输出目录(如 model_savepath、result_savepath 等)，不存在会自动创建
+    :param filename : 文件名(如 'hyperparams_stage_one.json')
+    :param config   : dict，任意可 JSON 序列化的超参数集合；
+                      函数会自动追加 '_saved_at' 时间戳字段
+    :return: 落盘的完整路径
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    config = dict(config)
+    config['_saved_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    path = os.path.join(save_dir, filename)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    print('超参数已保存至:', path)
+    return path

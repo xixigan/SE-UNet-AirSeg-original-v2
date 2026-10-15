@@ -162,6 +162,33 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
     flag = False                                      # 遗留未使用变量
     h_thresh = 0.5                                    # DTI 高阈值(种子)
     l_thresh = 0.35                                   # DTI 低阈值(生长候选)，比 train.py 的 0.4 更宽松
+
+    # 【超参数落盘】把本次测试所用的全部超参数与关键配置写成 JSON，存进结果目录，便于复现与追溯
+    save_hyperparams(os.path.join(result_savepath, folder_name), 'hyperparams_test.json', {
+        'task': '测试(滑窗推理+后处理+指标计算)',
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
+                  'model_stage': model_stage,
+                  'weights': model_stage + '/SE_UNet_{}.pth'.format(best_epoch),
+                  'epoch': best_epoch},
+        'inference': {
+            'cube_size': 128,
+            'step': 64,
+            'dataset_batch_size': 1,
+            'dataloader_batch_size': 1,
+            'num_workers': 0,
+        },
+        'postprocess': {
+            'DTI': DTI,                               # 1=双阈值受约束生长; 0=固定 0.5 阈值
+            'fixed_threshold': 0.5,                   # DTI=0 时使用
+            'dti_h_thresh': h_thresh,                 # DTI=1 时种子阈值
+            'dti_l_thresh': l_thresh,                 # DTI=1 时生长候选阈值
+            'edge_crop_ratio': 0.15,                  # 边缘 15% 直接置 0
+            'keep_largest_component': True,           # 只保留 26 连通最大连通域
+        },
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
+        'paths': {'result_savepath': result_savepath, 'testlog_savepath': testlog_savepath},
+        'gpu': gpu,
+    })
     with torch.no_grad():                             # 推理不需要梯度，省显存
         for i, (x, name, pos) in enumerate(test_dataloader):  
             name = name[0]   # DataLoader 把字符串包成 list，取回标量
