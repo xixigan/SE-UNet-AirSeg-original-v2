@@ -122,6 +122,13 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
     os.makedirs(result_savepath, exist_ok=True)   # 递归创建输出目录，避免写文件时报错
+
+    # ===== 推理超参数集中定义(便于统一调参与复现) =====
+    cube_size = 128                  # 滑窗推理块边长
+    step = 64                        # 滑窗步长(重叠一半)
+    batch_size_per_case_and_dataloader = 1   # Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    num_workers = 0                  # DataLoader 子进程数，0=主进程读
+
     def worker_init_fn(worker_id):
         np.random.seed(1 + worker_id)   # 定义但未被使用(当前 num_workers=0)，属遗留代码
 
@@ -132,13 +139,13 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
     # 想一次推理多块提速，把两处同时改成同一个值(如都=8)。详见 SegValCropData.__init__ 注释。
     test_dataset = SegTestCropData(file_path,
                                    data_root,
-                                   batch_size=1,
-                                   cube_size=128,
-                                   step=64)
+                                   batch_size=batch_size_per_case_and_dataloader,
+                                   cube_size=cube_size,
+                                   step=step)
     test_dataloader = DataLoader(dataset=test_dataset,
-                                 batch_size=1,
+                                 batch_size=batch_size_per_case_and_dataloader,
                                  shuffle=False,
-                                 num_workers=0,
+                                 num_workers=num_workers,
                                  pin_memory=True,
                                  drop_last=True)
 
@@ -169,25 +176,40 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
         'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
                   'model_stage': model_stage,
                   'weights': model_stage + '/SE_UNet_{}.pth'.format(best_epoch),
-                  'epoch': best_epoch},
+                  'epoch': best_epoch,
+                  '说明': 'SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率); model_stage=权重所属阶段目录, weights/epoch=测试所用权重与 epoch 号'},
         'inference': {
-            'cube_size': 128,
-            'step': 64,
-            'dataset_batch_size': 1,
-            'dataloader_batch_size': 1,
-            'num_workers': 0,
+            'cube_size': cube_size,
+            'cube_size_说明': '滑窗推理块边长',
+            'step': step,
+            'step_说明': '滑窗步长(重叠一半)',
+            'dataset_batch_size': batch_size_per_case_and_dataloader,
+            'dataset_batch_size_说明': 'Dataset 补齐基数(per_case) and DataLoader batch 共用同一个变量, 两者必须相等',
+            'dataloader_batch_size': batch_size_per_case_and_dataloader,
+            'dataloader_batch_size_说明': 'DataLoader 的 batch, 与 dataset_batch_size 共用同一个变量',
+            'num_workers': num_workers,
+            'num_workers_说明': 'DataLoader 子进程数, 0=主进程读',
         },
         'postprocess': {
-            'DTI': DTI,                               # 1=双阈值受约束生长; 0=固定 0.5 阈值
-            'fixed_threshold': 0.5,                   # DTI=0 时使用
-            'dti_h_thresh': h_thresh,                 # DTI=1 时种子阈值
-            'dti_l_thresh': l_thresh,                 # DTI=1 时生长候选阈值
-            'edge_crop_ratio': 0.15,                  # 边缘 15% 直接置 0
-            'keep_largest_component': True,           # 只保留 26 连通最大连通域
+            'DTI': DTI,
+            'DTI_说明': '1=双阈值受约束生长; 0=固定 0.5 阈值',
+            'fixed_threshold': 0.5,
+            'fixed_threshold_说明': 'DTI=0 时使用的固定阈值',
+            'dti_h_thresh': h_thresh,
+            'dti_h_thresh_说明': 'DTI=1 时种子阈值',
+            'dti_l_thresh': l_thresh,
+            'dti_l_thresh_说明': 'DTI=1 时生长候选阈值',
+            'edge_crop_ratio': 0.15,
+            'edge_crop_ratio_说明': '边缘 15% 直接置 0',
+            'keep_largest_component': True,
+            'keep_largest_component_说明': '只保留 26 连通最大连通域',
         },
-        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
-        'paths': {'result_savepath': result_savepath, 'testlog_savepath': testlog_savepath},
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
+                 '说明': 'data_root=数据根目录, file_path=病例列表, file_root=数据子目录'},
+        'paths': {'result_savepath': result_savepath, 'testlog_savepath': testlog_savepath,
+                  '说明': 'result_savepath=结果输出根目录, testlog_savepath=测试日志路径'},
         'gpu': gpu,
+        'gpu_说明': 'CUDA_VISIBLE_DEVICES 指定的 GPU 编号',
     })
     with torch.no_grad():                             # 推理不需要梯度，省显存
         for i, (x, name, pos) in enumerate(test_dataloader):  

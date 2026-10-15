@@ -155,7 +155,7 @@ def save_data_online(path, image, label, weight, names, limits=1500):
     目录内最多保留 limits 个 patch，超出时删掉损失最小(文件名数值最小)的那一个，
     相当于用一个“按损失排序的定长集合”做难例筛选（下一 epoch 由 OnlineHMData 读回再训）。
 
-    :param limits: 缓存上限，调用处传 int(len(train_dataset)*batch_size*0.3)，
+    :param limits: 缓存上限，调用处传 int(len(train_dataset)*batch_size_per_case*0.3)，
                    即只保留最难的前 30% patch
     """
     # 列出目录中已有的难例文件名，并按文件名前缀(损失值 float)升序排序 -> 最易的在前
@@ -255,9 +255,23 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     """
     stage=3                 # 标记当前阶段, 传给 validation() 决定是否计算 hard 指标
     max_epoches = 50         # 总 epoch 数
-    batch_size =1            # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
+    batch_size_per_case =1   # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
                              # 不是 DataLoader 的 batch_size！见下方 transpose(0,1) 说明
-    aug_flag = aug  
+    aug_flag = aug
+
+    # ===== 训练超参数集中定义(便于统一调参与复现) =====
+    cube_size = 128                  # 训练裁剪块边长
+    dataloader_batch_size = 1        # 训练 DataLoader 的 batch(必须保持 1，真实 batch 由 batch_size_per_case 决定)
+    num_workers = 0                  # DataLoader 子进程数，0=主进程读
+    learning_rate = 0.0001           # AdamW 初始学习率
+    lr_milestones = [40, 60]         # MultiStepLR 衰减点
+    lr_gamma = 0.1                   # 衰减系数
+    hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
+    hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
+    hm_dataloader_batch_size = 1     # 第二遍难例 DataLoader 的 batch
+    val_cube_size = 128              # 验证滑窗块边长
+    val_step = 64                    # 验证滑窗步长(重叠一半)
+    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu   # 必须在任何 .cuda() 之前设置才会生效
 
@@ -287,19 +301,19 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
                                   pred2_path=pred2_path,
                                   br_skel_path=br_skel_path,
                                   BR_weight_path=BR_weight_path,
-                                  batch_size=batch_size,
-                                  cube_size=128,
+                                  batch_size=batch_size_per_case,
+                                  cube_size=cube_size,
                                   aug_flag=aug_flag)
-    # 【关键设计】为什么 DataLoader 的 batch_size 写死 1，而 Dataset 里却有 batch_size？
+    # 【关键设计】为什么 DataLoader 的 batch_size 写死 1，而 Dataset 里却有 batch_size_per_case？
     # AirwayHMData3.__getitem__ 内部用 for _ in range(self.batch_size) 在【同一个病例】上
     # 连续采多个 patch（保证一个 batch 来自同一病例，难例采样逻辑才有意义），
     # 返回形状 (B,128,128,128)。DataLoader 再叠一维 -> (1,B,128,128,128)，
     # 随后用 transpose(0,1) 换成 (B,1,128,128,128)，从而“伪装”成 batch=B。
-    # 所以：想增大真实 batch，只改上面那个 batch_size，这里的 1 必须保持不动。
+    # 所以：想增大真实 batch，只改上面那个 batch_size_per_case，这里的 1 必须保持不动。
     train_data_loader = DataLoader(dataset=train_dataset,
-                                   batch_size=1,
+                                   batch_size=dataloader_batch_size,
                                    shuffle=True,
-                                   num_workers=0,      # 0=主进程读数据，避免 Windows 多进程开销与随机态问题
+                                   num_workers=num_workers,      # 0=主进程读数据，避免 Windows 多进程开销与随机态问题
                                    pin_memory=True,
                                    drop_last=True)
     # 验证集：SegValCropData 做滑窗切块(step=64 重叠一半)，一个病例会被拆成多条样本，
@@ -309,65 +323,93 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     # 想一次推理多块提速，把两处同时改成同一个值(如都=8)。详见 SegValCropData.__init__ 注释。
     valid_dataset = SegValCropData(file_path,
                                    data_root,
-                                   batch_size=1,
-                                   cube_size=128,
-                                   step=64)
+                                   batch_size=val_batch_size_per_case_and_dataloader,
+                                   cube_size=val_cube_size,
+                                   step=val_step)
     valid_dataloader = DataLoader(dataset=valid_dataset,
-                                  batch_size=1,
+                                  batch_size=val_batch_size_per_case_and_dataloader,
                                   shuffle=False,
-                                  num_workers=0,
+                                  num_workers=num_workers,
                                   pin_memory=True,
                                   drop_last=True)
 
     # 注意：train_dataset 的 __len__ 返回的是【病例数】而非 patch 数，
     # 所以 max_step 实际是“每 epoch 的迭代次数 = 病例数”，总更新步数非常少(十几例 x 51 epoch)
     max_step = len(train_dataset) * max_epoches
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)   # AdamW: 权重衰减与梯度解耦，比 Adam 正则更干净
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)   # AdamW: 权重衰减与梯度解耦，比 Adam 正则更干净
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                        milestones=[40, 60],
-                                                        gamma=0.1)  # 第 40/60 步把学习率乘 0.1（当前每 epoch step 两次，实际约第 20 epoch 就衰减）
+                                                        milestones=lr_milestones,
+                                                        gamma=lr_gamma)  # 到达 milestones 时把学习率乘 gamma（当前每 epoch step 两次，实际约第 20 epoch 就衰减）
 
     # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
     save_hyperparams(model_savepath, 'hyperparams_stage_three.json', {
         'stage': 3,
-        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'stage_说明': '训练阶段编号(3=第三阶段)',
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
+                  '说明': 'SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率)'},
         'train': {
             'max_epoches': max_epoches,
-            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
-            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData3 注释
-            'num_workers': 0,
-            'cube_size': 128,
+            'max_epoches_说明': '总 epoch 数',
+            'batch_size_per_case': batch_size_per_case,
+            'batch_size_per_case_说明': 'Dataset 内部每病例采几个 patch(真实 batch)',
+            'dataloader_batch_size': dataloader_batch_size,
+            'dataloader_batch_size_说明': 'DataLoader 的 batch, 必须保持 1, 真实 batch 由 batch_size_per_case 决定(见 AirwayHMData3 注释)',
+            'num_workers': num_workers,
+            'num_workers_说明': 'DataLoader 子进程数, 0=主进程读',
+            'cube_size': cube_size,
+            'cube_size_说明': '训练裁剪块边长',
             'aug': aug,
+            'aug_说明': '1=开启随机翻转增强',
             'optimizer': 'AdamW',
-            'lr': 0.0001,
+            'optimizer_说明': '优化器类型, 初始学习率见 lr',
+            'lr': learning_rate,
+            'lr_说明': 'AdamW 初始学习率',
             'scheduler': 'MultiStepLR',
-            'milestones': [40, 60],
-            'gamma': 0.1,
+            'scheduler_说明': '学习率调度器, 到达 milestones 时把学习率乘 gamma',
+            'milestones': lr_milestones,
+            'milestones_说明': 'MultiStepLR 衰减点(epoch)',
+            'gamma': lr_gamma,
+            'gamma_说明': '学习率衰减系数',
             'loss': 'general_union_loss_lib(alpha=0.2) + atr_loss(break_loss, 仅骨架区域, weight 融合 BR_weight)',
+            'loss_说明': '损失函数配置',
             'online_hard_mining': {
                 'enabled': True,
                 'cache_dir': online_savepath,
-                'limits_ratio': 0.3,                    # 缓存上限 = 病例数 x batch x 0.3, 只留最难的前 30%
+                'limits_ratio': hm_limits_ratio,
+                'limits_ratio_说明': '缓存上限 = 病例数 x batch x 该比例, 只留最难的前 30%',
                 'cached_channels': ['image', 'label', 'weight', 'skel'],
+                'cached_channels_说明': '难例缓存保存的通道',
             },
-            'start_model': start_model,                 # 热启动来源(stage2 权重目录)
+            'start_model': start_model,
+            'start_model_说明': '热启动来源(stage2 权重目录)',
             'start_epoch': start_epoch,
+            'start_epoch_说明': '热启动使用的 epoch 号',
         },
         'validation': {
             'DTI': DTI,
-            'cube_size': 128,
-            'step': 64,
-            'batch_size': 1,
-            'fixed_threshold': 0.5,                     # DTI=0 时使用
-            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
-            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+            'DTI_说明': '1=双阈值后处理, 0=固定 0.5 阈值',
+            'cube_size': val_cube_size,
+            'cube_size_说明': '验证滑窗块边长',
+            'step': val_step,
+            'step_说明': '验证滑窗步长(重叠一半)',
+            'batch_size': val_batch_size_per_case_and_dataloader,
+            'batch_size_说明': 'SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)',
+            'fixed_threshold': 0.5,
+            'fixed_threshold_说明': 'DTI=0 时使用的固定阈值',
+            'dti_h_thresh': 0.5,
+            'dti_h_thresh_说明': 'DTI=1 时种子阈值(见 validation())',
+            'dti_l_thresh': 0.4,
+            'dti_l_thresh_说明': 'DTI=1 时生长候选阈值(见 validation())',
         },
         'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
                  'pred2_path': pred2_path, 'br_skel_path': br_skel_path,
-                 'BR_weight_path': BR_weight_path},
+                 'BR_weight_path': BR_weight_path,
+                 '说明': 'data_root=数据根目录, file_path=病例列表, file_root=数据子目录; pred2_path/br_skel_path/BR_weight_path=stage2 预测、骨架与权重图路径'},
         'paths': {'model_savepath': model_savepath, 'online_savepath': online_savepath,
-                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root},
+                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root,
+                  '说明': 'model_savepath=权重目录, online_savepath=难例缓存目录, log_savepath=训练日志, tensorboard_logdir=TensorBoard 目录'},
         'gpu': gpu,
+        'gpu_说明': 'CUDA_VISIBLE_DEVICES 指定的 GPU 编号',
     })
 
     # resume
@@ -454,8 +496,8 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
                              weight,
                              skel,
                              names,
-                             limits=int(len(train_dataset) * batch_size *
-                                        0.3)) 
+                             limits=int(len(train_dataset) * batch_size_per_case *
+                                        hm_limits_ratio))
 
             if iter % 10 == 0:   # 每 10 个 iter 打印一次，避免刷屏
                 print('epoch:', ep, iter + ep * len(train_dataset), '/',
@@ -478,17 +520,17 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         # '''
         # ============ 第二遍：把本 epoch 攒下的难例读回来再训一遍 ============
         # print('start online hard mining: ')
-        # rate=1.0 表示读取缓存目录中【全部】难例(而非按比例抽样)
+        # rate=1.0 表示读取缓存目录中【全部】难例(而非按比例抽样)（缓存本身已取了limits_ratio比例）
         hm_dataset = OnlineHMData3(data_root=online_savepath,
-                                  batch_size=1,
-                                  rate=1.0)
+                                  batch_size=hm_dataloader_batch_size,
+                                  rate=hm_rate)
         # OnlineHMData3 每个 item 就是磁盘上单个难例 patch(128^3)，
-        # 这里 DataLoader 的 batch_size=1 就是真实 batch；Dataset 构造参数里的
-        # batch_size 是遗留未用。第二遍每 epoch 迭代次数 = 缓存难例数(int(5*1*0.3)=1)。
+        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch；Dataset 构造参数里的
+        # batch_size 是遗留未用。第二遍每 epoch 迭代次数 = 缓存难例数。
         hm_dataloader = DataLoader(dataset=hm_dataset,
-                                   batch_size=1,
+                                   batch_size=hm_dataloader_batch_size,
                                    shuffle=True,
-                                   num_workers=0,
+                                   num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
         for iter, pack in enumerate(hm_dataloader):
@@ -568,8 +610,22 @@ def train2(data_root,
     """
     stage=2
     max_epoches = 50
-    batch_size =1      # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
-    aug_flag = aug  
+    batch_size_per_case =1   # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
+    aug_flag = aug
+
+    # ===== 训练超参数集中定义(便于统一调参与复现) =====
+    cube_size = 128                  # 训练裁剪块边长
+    dataloader_batch_size = 1        # 训练 DataLoader 的 batch(必须保持 1，真实 batch 由 batch_size_per_case 决定)
+    num_workers = 0                  # DataLoader 子进程数，0=主进程读
+    learning_rate = 0.0001           # AdamW 初始学习率
+    lr_milestones = [40, 60]         # MultiStepLR 衰减点
+    lr_gamma = 0.1                   # 衰减系数
+    hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
+    hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
+    hm_dataloader_batch_size = 1     # 第二遍难例 DataLoader 的 batch
+    val_cube_size = 128              # 验证滑窗块边长
+    val_step = 64                    # 验证滑窗步长(重叠一半)
+    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -596,16 +652,16 @@ def train2(data_root,
                                  data_root=data_root,
                                  file_root=file_root,
                                  pred_path=pred_path,
-                                 batch_size=batch_size,
-                                 cube_size=128,
+                                 batch_size=batch_size_per_case,
+                                 cube_size=cube_size,
                                  aug_flag=aug_flag)
-    # 同 stage3 的【关键设计】：Dataset 内 batch_size 决定每次裁几个同病例 patch(真实 batch)，
+    # 同 stage3 的【关键设计】：Dataset 内 batch_size_per_case 决定每次裁几个同病例 patch(真实 batch)，
     # DataLoader 的 1 必须保持不动(>1 会触发 transpose/cat 的通道维 bug)，
     # drop_last=True 但 __len__=病例数、batch=1，不会丢样本。详见 AirwayHMData 类注释。
     train_data_loader = DataLoader(dataset=train_dataset,
-                                   batch_size=1,
+                                   batch_size=dataloader_batch_size,
                                    shuffle=True,
-                                   num_workers=0,
+                                   num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
     # 注意：Dataset 的 batch_size 只是"每病例块数补齐的基数"，与下面 DataLoader 的
@@ -613,61 +669,88 @@ def train2(data_root,
     # 想一次推理多块提速，把两处同时改成同一个值(如都=8)。详见 SegValCropData.__init__ 注释。
     valid_dataset = SegValCropData(file_path,
                                    data_root,
-                                   batch_size=1,
-                                   cube_size=128,
-                                   step=64)
+                                   batch_size=val_batch_size_per_case_and_dataloader,
+                                   cube_size=val_cube_size,
+                                   step=val_step)
     valid_dataloader = DataLoader(dataset=valid_dataset,
-                                  batch_size=1,
+                                  batch_size=val_batch_size_per_case_and_dataloader,
                                   shuffle=False,
-                                  num_workers=0,
+                                  num_workers=num_workers,
                                   pin_memory=True,
                                   drop_last=True)
 
     max_step = len(train_dataset) * max_epoches
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                        milestones=[40, 60],
-                                                        gamma=0.1)
+                                                        milestones=lr_milestones,
+                                                        gamma=lr_gamma)
 
     # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
     save_hyperparams(model_savepath, 'hyperparams_stage_two.json', {
         'stage': 2,
-        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'stage_说明': '训练阶段编号(2=第二阶段)',
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
+                  '说明': 'SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率)'},
         'train': {
             'max_epoches': max_epoches,
-            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
-            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData 注释
-            'num_workers': 0,
-            'cube_size': 128,
+            'max_epoches_说明': '总 epoch 数',
+            'batch_size_per_case': batch_size_per_case,
+            'batch_size_per_case_说明': 'Dataset 内部每病例采几个 patch(真实 batch)',
+            'dataloader_batch_size': dataloader_batch_size,
+            'dataloader_batch_size_说明': 'DataLoader 的 batch, 必须保持 1, 真实 batch 由 batch_size_per_case 决定(见 AirwayHMData 注释)',
+            'num_workers': num_workers,
+            'num_workers_说明': 'DataLoader 子进程数, 0=主进程读',
+            'cube_size': cube_size,
+            'cube_size_说明': '训练裁剪块边长',
             'aug': aug,
+            'aug_说明': '1=开启随机翻转增强',
             'optimizer': 'AdamW',
-            'lr': 0.0001,
+            'optimizer_说明': '优化器类型, 初始学习率见 lr',
+            'lr': learning_rate,
+            'lr_说明': 'AdamW 初始学习率',
             'scheduler': 'MultiStepLR',
-            'milestones': [40, 60],
-            'gamma': 0.1,
+            'scheduler_说明': '学习率调度器, 到达 milestones 时把学习率乘 gamma',
+            'milestones': lr_milestones,
+            'milestones_说明': 'MultiStepLR 衰减点(epoch)',
+            'gamma': lr_gamma,
+            'gamma_说明': '学习率衰减系数',
             'loss': 'general_union_loss_lib(加权根号Tversky, alpha=0.2, beta=0.8, en+de 两路)',
+            'loss_说明': '损失函数配置',
             'online_hard_mining': {
                 'enabled': True,
                 'cache_dir': online_savepath,
-                'limits_ratio': 0.3,                    # 缓存上限 = 病例数 x batch x 0.3, 只留最难的前 30%
+                'limits_ratio': hm_limits_ratio,
+                'limits_ratio_说明': '缓存上限 = 病例数 x batch x 该比例, 只留最难的前 30%',
             },
-            'start_model': start_model,                 # 热启动来源(stage1 权重目录)
+            'start_model': start_model,
+            'start_model_说明': '热启动来源(stage1 权重目录)',
             'start_epoch': start_epoch,
+            'start_epoch_说明': '热启动使用的 epoch 号',
         },
         'validation': {
             'DTI': DTI,
-            'cube_size': 128,
-            'step': 64,
-            'batch_size': 1,
-            'fixed_threshold': 0.5,                     # DTI=0 时使用
-            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
-            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+            'DTI_说明': '1=双阈值后处理, 0=固定 0.5 阈值',
+            'cube_size': val_cube_size,
+            'cube_size_说明': '验证滑窗块边长',
+            'step': val_step,
+            'step_说明': '验证滑窗步长(重叠一半)',
+            'batch_size': val_batch_size_per_case_and_dataloader,
+            'batch_size_说明': 'SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)',
+            'fixed_threshold': 0.5,
+            'fixed_threshold_说明': 'DTI=0 时使用的固定阈值',
+            'dti_h_thresh': 0.5,
+            'dti_h_thresh_说明': 'DTI=1 时种子阈值(见 validation())',
+            'dti_l_thresh': 0.4,
+            'dti_l_thresh_说明': 'DTI=1 时生长候选阈值(见 validation())',
         },
         'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
-                 'pred_path(难例定位来源)': pred_path},
+                 'pred_path': pred_path,
+                 '说明': 'data_root=数据根目录, file_path=病例列表, file_root=数据子目录; pred_path=stage1 预测结果路径(难例定位来源)'},
         'paths': {'model_savepath': model_savepath, 'online_savepath': online_savepath,
-                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root},
+                  'log_savepath': log_savepath, 'tensorboard_logdir': log_root,
+                  '说明': 'model_savepath=权重目录, online_savepath=难例缓存目录, log_savepath=训练日志, tensorboard_logdir=TensorBoard 目录'},
         'gpu': gpu,
+        'gpu_说明': 'CUDA_VISIBLE_DEVICES 指定的 GPU 编号',
     })
 
     # resume
@@ -737,8 +820,8 @@ def train2(data_root,
                              label,
                              weight,
                              names,
-                             limits=int(len(train_dataset) * batch_size *
-                                        0.3)) 
+                             limits=int(len(train_dataset) * batch_size_per_case *
+                                        hm_limits_ratio))
 
             if iter % 10 == 0:
                 print('epoch:', ep, iter + ep * len(train_dataset), '/',
@@ -763,15 +846,15 @@ def train2(data_root,
         # print('start online hard mining: ')
         # rate=1.0 表示读取缓存目录中【全部】难例(缓存本身已只保留最难的前 30%)
         hm_dataset = OnlineHMData(data_root=online_savepath,
-                                  batch_size=1,
-                                  rate=1.0)
+                                  batch_size=hm_dataloader_batch_size,
+                                  rate=hm_rate)
         # OnlineHMData 每个 item 就是磁盘上单个难例 patch(128^3)，
-        # 这里 DataLoader 的 batch_size=1 就是真实 batch；Dataset 构造参数里的
+        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch；Dataset 构造参数里的
         # batch_size 是遗留未用。第二遍每 epoch 迭代次数 = 缓存难例数。
         hm_dataloader = DataLoader(dataset=hm_dataset,
-                                   batch_size=1,
+                                   batch_size=hm_dataloader_batch_size,
                                    shuffle=True,
-                                   num_workers=0,
+                                   num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
         for iter, pack in enumerate(hm_dataloader):
@@ -834,8 +917,20 @@ def train(data_root,model_savepath,
     """
     stage=1
     max_epoches = 100
-    batch_size =1
-    aug_flag = aug  
+    batch_size_per_case =1
+    aug_flag = aug
+
+    # ===== 训练超参数集中定义(便于统一调参与复现) =====
+    cube_size = 128                  # 训练裁剪块边长
+    dataloader_batch_size = 1        # 训练 DataLoader 的 batch(必须保持 1，真实 batch 由 batch_size_per_case 决定)
+    num_workers = 0                  # DataLoader 子进程数，0=主进程读
+    learning_rate = 0.0001           # AdamW 初始学习率
+    lr_milestones = [60, 90]         # MultiStepLR 衰减点(stage1 轮数多，衰减点相应后移)
+    lr_gamma = 0.1                   # 衰减系数
+    val_cube_size = 128              # 验证滑窗块边长
+    val_step = 64                    # 验证滑窗步长(重叠一半)
+    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
 
@@ -861,15 +956,15 @@ def train(data_root,model_savepath,
     train_dataset = CropSegData(file_path=file_path,
                                 data_root=data_root,
                                 file_root=file_root,
-                                batch_size=batch_size,
+                                batch_size=batch_size_per_case,
                                 aug_flag=aug_flag)
-    # 同 stage3 的【关键设计】：Dataset 内 batch_size 决定每次裁几个同病例 patch(真实 batch)，
+    # 同 stage3 的【关键设计】：Dataset 内 batch_size_per_case 决定每次裁几个同病例 patch(真实 batch)，
     # DataLoader 的 1 必须保持不动(>1 会触发 transpose/cat 的通道维 bug)；
     # __len__=病例数(5)，所以一个 epoch 第一遍 = 5 次迭代 = 5 个 patch。
     train_data_loader = DataLoader(dataset=train_dataset,
-                                   batch_size=1,
+                                   batch_size=dataloader_batch_size,
                                    shuffle=True,
-                                   num_workers=0,
+                                   num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
     # 注意：Dataset 的 batch_size 只是"每病例块数补齐的基数"，与下面 DataLoader 的
@@ -877,54 +972,78 @@ def train(data_root,model_savepath,
     # 想一次推理多块提速，把两处同时改成同一个值(如都=8)。详见 SegValCropData.__init__ 注释。
     valid_dataset = SegValCropData(file_path,
                                    data_root,
-                                   batch_size=1,
-                                   cube_size=128,
-                                   step=64)
+                                   batch_size=val_batch_size_per_case_and_dataloader,
+                                   cube_size=val_cube_size,
+                                   step=val_step)
     valid_dataloader = DataLoader(dataset=valid_dataset,
-                                  batch_size=1,
+                                  batch_size=val_batch_size_per_case_and_dataloader,
                                   shuffle=False,
-                                  num_workers=0,
+                                  num_workers=num_workers,
                                   pin_memory=True,
                                   drop_last=True)
 
     max_step = len(train_dataset) * max_epoches
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                        milestones=[60, 90],   # stage1 轮数多，衰减点相应后移
-                                                        gamma=0.1)
+                                                        milestones=lr_milestones,   # stage1 轮数多，衰减点相应后移
+                                                        gamma=lr_gamma)
 
     # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
     save_hyperparams(model_savepath, 'hyperparams_stage_one.json', {
         'stage': 1,
-        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1},
+        'stage_说明': '训练阶段编号(1=第一阶段)',
+        'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
+                  '说明': 'SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率)'},
         'train': {
             'max_epoches': max_epoches,
-            'batch_size_per_case': batch_size,          # Dataset 内部每病例采几个 patch(真实 batch)
-            'dataloader_batch_size': 1,                 # 必须保持 1，见 AirwayHMData 注释
-            'num_workers': 0,
-            'cube_size': 128,                           # CropSegData 内部随机裁剪的 patch 边长
-            'aug': aug,                                 # 1=开启随机翻转增强
+            'max_epoches_说明': '总 epoch 数',
+            'batch_size_per_case': batch_size_per_case,
+            'batch_size_per_case_说明': 'Dataset 内部每病例采几个 patch(真实 batch)',
+            'dataloader_batch_size': dataloader_batch_size,
+            'dataloader_batch_size_说明': 'DataLoader 的 batch, 必须保持 1, 真实 batch 由 batch_size_per_case 决定(见 AirwayHMData 注释)',
+            'num_workers': num_workers,
+            'num_workers_说明': 'DataLoader 子进程数, 0=主进程读',
+            'cube_size': cube_size,
+            'cube_size_说明': 'CropSegData 内部随机裁剪的 patch 边长',
+            'aug': aug,
+            'aug_说明': '1=开启随机翻转增强',
             'optimizer': 'AdamW',
-            'lr': 0.0001,
+            'optimizer_说明': '优化器类型, 初始学习率见 lr',
+            'lr': learning_rate,
+            'lr_说明': 'AdamW 初始学习率',
             'scheduler': 'MultiStepLR',
-            'milestones': [60, 90],
-            'gamma': 0.1,
+            'scheduler_说明': '学习率调度器, 到达 milestones 时把学习率乘 gamma',
+            'milestones': lr_milestones,
+            'milestones_说明': 'MultiStepLR 衰减点(epoch)',
+            'gamma': lr_gamma,
+            'gamma_说明': '学习率衰减系数',
             'loss': 'dice_loss(无权重, en+de 两路等权相加)',
+            'loss_说明': '损失函数配置',
         },
         'validation': {
-            'DTI': DTI,                                 # 1=双阈值后处理, 0=固定 0.5 阈值
-            'cube_size': 128,
-            'step': 64,
-            'batch_size': 1,
-            'fixed_threshold': 0.5,                     # DTI=0 时使用
-            'dti_h_thresh': 0.5,                        # DTI=1 时种子阈值(见 validation())
-            'dti_l_thresh': 0.4,                        # DTI=1 时生长候选阈值(见 validation())
+            'DTI': DTI,
+            'DTI_说明': '1=双阈值后处理, 0=固定 0.5 阈值',
+            'cube_size': val_cube_size,
+            'cube_size_说明': '验证滑窗块边长',
+            'step': val_step,
+            'step_说明': '验证滑窗步长(重叠一半)',
+            'batch_size': val_batch_size_per_case_and_dataloader,
+            'batch_size_说明': 'SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)',
+            'fixed_threshold': 0.5,
+            'fixed_threshold_说明': 'DTI=0 时使用的固定阈值',
+            'dti_h_thresh': 0.5,
+            'dti_h_thresh_说明': 'DTI=1 时种子阈值(见 validation())',
+            'dti_l_thresh': 0.4,
+            'dti_l_thresh_说明': 'DTI=1 时生长候选阈值(见 validation())',
         },
-        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
+                 '说明': 'data_root=数据根目录, file_path=病例列表, file_root=数据子目录'},
         'paths': {'model_savepath': model_savepath, 'log_savepath': log_savepath,
-                  'tensorboard_logdir': log_root},
+                  'tensorboard_logdir': log_root,
+                  '说明': 'model_savepath=权重目录, log_savepath=训练日志, tensorboard_logdir=TensorBoard 目录'},
         'gpu': gpu,
+        'gpu_说明': 'CUDA_VISIBLE_DEVICES 指定的 GPU 编号',
     })
 
     # resume
@@ -1324,9 +1443,21 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
 
     model = SE_UNet(in_channel=2, n_classes=1)
 
+    # ===== 验证超参数集中定义(便于统一调参与复现) =====
+    val_cube_size = 128              # 验证滑窗块边长
+    val_step = 64                    # 验证滑窗步长(重叠一半)
+    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    num_workers = 0                  # DataLoader 子进程数，0=主进程读
+
     # Dataset 的 batch_size 仅是块数补齐基数，必须与 DataLoader 的 batch_size 相等(详见 SegValCropData.__init__)
-    valid_dataset = SegValCropData(file_path, data_root, batch_size=1, cube_size = 128, step = 64)
-    valid_dataloader = DataLoader(dataset=valid_dataset, batch_size=1, shuffle=False, num_workers=0,
+    valid_dataset = SegValCropData(file_path,
+                                   data_root,
+                                   batch_size=val_batch_size_per_case_and_dataloader,
+                                   cube_size=val_cube_size,
+                                   step=val_step)
+    valid_dataloader = DataLoader(dataset=valid_dataset,
+                                  batch_size=val_batch_size_per_case_and_dataloader,
+                                  shuffle=False, num_workers=num_workers,
                                   pin_memory=True, drop_last=True)
 
     # dtival 是纯推理复验函数(只调用 validation, 不做反向传播), 因此模型应处于 eval()
@@ -1339,20 +1470,31 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
     save_hyperparams(model_savepath, 'hyperparams_dtival_stage_{}.json'.format(stage), {
         'task': 'DTI 复验(双阈值口径重新评估已训好的 epoch)',
         'stage': stage,
+        'stage_说明': '被复验权重所属的训练阶段编号',
         'model': {'arch': 'SE_UNet', 'in_channel': 2, 'n_classes': 1,
                   'weights': os.path.join(model_savepath, 'SE_UNet_{}.pth'.format(dtiep)),
-                  'epoch': dtiep},
+                  'epoch': dtiep,
+                  '说明': 'SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率); weights/epoch=被复验的权重文件与 epoch 号'},
         'validation': {
-            'DTI': 1,                                   # 本函数固定用 DTI=1 双阈值后处理口径
-            'cube_size': 128,
-            'step': 64,
-            'batch_size': 1,
-            'dti_h_thresh': 0.5,                        # 种子阈值(见 validation())
-            'dti_l_thresh': 0.4,                        # 生长候选阈值(见 validation())
+            'DTI': 1,
+            'DTI_说明': '本函数固定用 DTI=1 双阈值后处理口径',
+            'cube_size': val_cube_size,
+            'cube_size_说明': '验证滑窗块边长',
+            'step': val_step,
+            'step_说明': '验证滑窗步长(重叠一半)',
+            'batch_size': val_batch_size_per_case_and_dataloader,
+            'batch_size_说明': 'SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)',
+            'dti_h_thresh': 0.5,
+            'dti_h_thresh_说明': '种子阈值(见 validation())',
+            'dti_l_thresh': 0.4,
+            'dti_l_thresh_说明': '生长候选阈值(见 validation())',
         },
-        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root},
-        'paths': {'model_savepath': model_savepath, 'dti_log_savepath': dti_log_savepath},
+        'data': {'data_root': data_root, 'file_path': file_path, 'file_root': file_root,
+                 '说明': 'data_root=数据根目录, file_path=病例列表, file_root=数据子目录'},
+        'paths': {'model_savepath': model_savepath, 'dti_log_savepath': dti_log_savepath,
+                  '说明': 'model_savepath=权重目录(复验 JSON 也存这里), dti_log_savepath=复验结果独立日志路径'},
         'gpu': gpu,
+        'gpu_说明': 'CUDA_VISIBLE_DEVICES 指定的 GPU 编号',
     })
 
     starttime=time.time()
