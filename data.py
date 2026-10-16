@@ -384,6 +384,12 @@ class AirwayHMData(Dataset):
 
         输出：函数内 print 的 [Scheduler] 行只打到终端 stdout，不写入日志文件。
         """
+        # 【调节闸门】两个条件缺一不可：
+        #   ① epoch % decay_step == 0：stage2 每 5 个 epoch 才调一次 hard_ratio(decay_step=5)，
+        #      避免逐 epoch 调节被验证指标的噪声带着跑；(stage3 版 decay_step=1，即每轮都调)
+        #   ② epoch != 0：第 0 轮时 val_td_list 只有 1 个点，无"上一 epoch"可比、
+        #      趋势无从谈起，且初值 0.4 本就是起点，首调无意义，故直接跳过。
+        # 不满足时整个函数什么都不做，hard_ratio 原样带入下一个 epoch。
         if epoch % self.decay_step == 0 and epoch != 0:
             # 每 decay_step 个 epoch 才调一次；取最近 3 个 epoch 的分数均值抗噪
             window = min(3, len(val_loss_random_list))
@@ -591,6 +597,12 @@ class AirwayHMData3(Dataset):
         val_loss_* 实为 Dice 分数(越大越好)，命名带 loss 是历史遗留。
         [Scheduler] 输出只打到终端 stdout，不写入日志文件。
         """
+        # 【调节闸门】与 AirwayHMData.update_scheduler 同一逻辑，只是写成了"不满足就提前 return"
+        # 的反向形式：① epoch % decay_step != 0 时跳过——本类 decay_step=1，条件恒假，
+        #    即 stage3 每个 epoch 都调节(比 stage2 的每 5 轮更频繁，因 hard/break 双参数需快速响应)；
+        # ② epoch == 0 时跳过——首轮 val_td_list 只有 1 个点，无趋势基线可比，
+        #    且 hard_ratio=0.8/break_ratio=0.625 初值本就是起点。
+        # 不满足任一条件时两个比例原样带入下一个 epoch。
         if epoch % self.decay_step != 0 or epoch == 0:
             return  # only update every decay_step
 
@@ -612,22 +624,21 @@ class AirwayHMData3(Dataset):
         print(f"[Scheduler] Epoch {epoch}: diff={diff:.4f}, TD_trend={td_trend:.4f}, BD_trend={bd_trend:.4f}")
 
         # ------------------ Adjust hard_ratio ------------------
-        step = self.decay_rate
         if diff > 0.04 or td_trend < 0 or bd_trend < 0:
             # Hard examples are worse or tree quality decreased → increase Hard ratio
-            self.hard_ratio = min(self.max_hard_ratio, self.hard_ratio + step)
+            self.hard_ratio = min(self.max_hard_ratio, self.hard_ratio + self.decay_rate)
         elif diff < 0.02 and td_trend >= 0 and bd_trend >= 0:
             # Hard close to overall and tree improving → decrease Hard ratio
-            self.hard_ratio = max(self.min_hard_ratio, self.hard_ratio - step)
+            self.hard_ratio = max(self.min_hard_ratio, self.hard_ratio - self.decay_rate)
         # else: keep unchanged
 
         # ------------------ Adjust break_ratio within Hard ------------------
         # Simple rule: if TD/BD trend < 0, increase break_ratio to focus on break points
         # 断点(气道被砍断)直接拉低 TD/BD，故树质量退步时优先补断点锚点
         if td_trend < 0 or bd_trend < 0:
-            self.break_ratio = min(self.max_break_ratio, self.break_ratio + step)
+            self.break_ratio = min(self.max_break_ratio, self.break_ratio + self.decay_rate)
         elif td_trend > 0 and bd_trend > 0:
-            self.break_ratio = max(self.min_break_ratio, self.break_ratio - step)
+            self.break_ratio = max(self.min_break_ratio, self.break_ratio - self.decay_rate)
         # else: keep unchanged
 
         print(f"[Scheduler] Updated hard_ratio -> {self.hard_ratio:.2f}, break_ratio -> {self.break_ratio:.2f}")

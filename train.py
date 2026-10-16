@@ -1154,6 +1154,15 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
 
                                 
                     if stage!=1:
+                        # 【难区掩码】1-pred1 把整卷划成两段：stage1 已判为气道的地方=0(掩掉，
+                        # 不计入本轮成绩)，stage1 没判出的地方=1(含"真漏检气道"+"全部背景"，
+                        # 即当前模型的增量战场)。乘上掩码后：
+                        #   hard_pred  = 当前模型在掩码区新预测出的气道(捡回来的 + 乱捡的假阳)
+                        #   hard_label = 掩码区里真正该捡回的气道(=stage1 的漏检集合)
+                        # 于是下面两个二值 Dice(注意是分数不是损失，越大越好)分别衡量：
+                        #   random 路 = 整卷总体表现；hard 路 = 只考"stage1 漏掉的找回了多少"。
+                        # 两者的差 diff 供 update_scheduler 调节 hard_ratio：diff 大=难区拖后腿
+                        # -> 多采难例；diff 小=难区已追上 -> 回归均衡。stage1 无上一阶段预测，故跳过。
                         hard_pred = pred * (1 - pred1)
                         hard_label= label * (1 - pred1)
 
