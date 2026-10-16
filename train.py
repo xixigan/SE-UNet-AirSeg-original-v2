@@ -463,19 +463,24 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
             # 两个窗宽沿通道维拼成 2 通道输入，匹配 SE_UNet(in_channel=2)
             data = torch.cat([data, data2], dim=1)
 
-            # 模型是深监督结构：返回编码端与解码端两个预测头，都参与损失
-            pred_en, pred_de = model(data)
-            pred_en = torch.sigmoid(pred_en)   # 网络输出的是 logits，必须 sigmoid 才能当概率
-            pred_de = torch.sigmoid(pred_de)
+            # 【AMP bf16】前向+损失包进 autocast：conv 走 bf16(Tensor Core)省显存提速，
+            # InstanceNorm/sum/pow 等归约类算子由 autocast 自动保持 fp32；
+            # A4000 为 Ampere(cc8.6)支持 bf16，指数范围与 fp32 相同，无需 GradScaler。
+            # backward/optimizer.step 保持原样(master weights 与 AdamW 状态仍是 fp32)。
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                # 模型是深监督结构：返回编码端与解码端两个预测头，都参与损失
+                pred_en, pred_de = model(data)
+                pred_en = torch.sigmoid(pred_en)   # 网络输出的是 logits，必须 sigmoid 才能当概率
+                pred_de = torch.sigmoid(pred_de)
 
-            dice_loss_en = general_union_loss_lib(pred_en, label, weight)
-            dice_loss_de = general_union_loss_lib(pred_de, label, weight)
+                dice_loss_en = general_union_loss_lib(pred_en, label, weight)
+                dice_loss_de = general_union_loss_lib(pred_de, label, weight)
 
-            # 断点损失：编码端与解码端各算一次再相加
-            break_loss = atr_loss(pred_en, label, skel, weight) + atr_loss(
-                pred_de, label, skel, weight)
-            # 总损失：解码端权重 1(主输出)，编码端 0.5(辅助深监督)，断点 0.5
-            loss =  dice_loss_de * 1 + dice_loss_en * 0.5 + break_loss * 0.5  
+                # 断点损失：编码端与解码端各算一次再相加
+                break_loss = atr_loss(pred_en, label, skel, weight) + atr_loss(
+                    pred_de, label, skel, weight)
+                # 总损失：解码端权重 1(主输出)，编码端 0.5(辅助深监督)，断点 0.5
+                loss =  dice_loss_de * 1 + dice_loss_en * 0.5 + break_loss * 0.5  
 
             optimizer.zero_grad()
             loss.backward()
@@ -541,15 +546,17 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
             label = pack[1].float().cuda()
             weight = pack[2].float().cuda()
             skel = pack[3].float().cuda()
-            pred_en, pred_de = model(data)
-            pred_en = torch.sigmoid(pred_en)
-            pred_de = torch.sigmoid(pred_de)
+            # 【AMP bf16】难例遍同样只包前向+损失，backward/step 原样(见第一遍注释)
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred_en, pred_de = model(data)
+                pred_en = torch.sigmoid(pred_en)
+                pred_de = torch.sigmoid(pred_de)
 
-            break_loss = atr_loss(pred_en, label, skel, weight) + atr_loss(
-                pred_de, label, skel, weight)
-            dice_loss_all = general_union_loss_lib(pred_en, label, weight) * 0.5 + \
-                            general_union_loss_lib(pred_de, label, weight)
-            loss = break_loss * 0.5 + dice_loss_all   # 难例遍：断点与区域损失各占一半
+                break_loss = atr_loss(pred_en, label, skel, weight) + atr_loss(
+                    pred_de, label, skel, weight)
+                dice_loss_all = general_union_loss_lib(pred_en, label, weight) * 0.5 + \
+                                general_union_loss_lib(pred_de, label, weight)
+                loss = break_loss * 0.5 + dice_loss_all   # 难例遍：断点与区域损失各占一半
             optimizer.zero_grad()   # 清空上一 iter 累积的梯度(否则梯度会累加)
             loss.backward()         # 反向传播求梯度
             optimizer.step()        # 按 AdamW 规则更新参数
@@ -792,14 +799,17 @@ def train2(data_root,
             weight = weight.transpose(0, 1)
             data = torch.cat([data, data2], dim=1)   # 两窗宽拼成 2 通道
 
-            pred_en, pred_de = model(data)
-            pred_en = torch.sigmoid(pred_en)   # logits -> 概率
-            pred_de = torch.sigmoid(pred_de)
+            # 【AMP bf16】前向+损失包进 autocast，归约/归一化自动保持 fp32；
+            # backward/optimizer.step 不动(master weights 仍 fp32)。详见 train3 首处注释。
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred_en, pred_de = model(data)
+                pred_en = torch.sigmoid(pred_en)   # logits -> 概率
+                pred_de = torch.sigmoid(pred_de)
 
-            dice_loss_en = general_union_loss_lib(pred_en, label, weight)
-            dice_loss_de = general_union_loss_lib(pred_de, label, weight)
+                dice_loss_en = general_union_loss_lib(pred_en, label, weight)
+                dice_loss_de = general_union_loss_lib(pred_de, label, weight)
 
-            loss = dice_loss_de * 1 + dice_loss_en * 0.5   # 解码端为主，编码端辅助(深监督)
+                loss = dice_loss_de * 1 + dice_loss_en * 0.5   # 解码端为主，编码端辅助(深监督)
             if np.isnan(loss.item()):   # 【死代码】发现 NaN 只赋个无用变量，既不跳过也不报错，
                 sdfs = 3                # NaN 仍会照常 backward 污染权重，应改为 continue 或 raise
             optimizer.zero_grad()
@@ -864,14 +874,16 @@ def train2(data_root,
             data = pack[0].float().cuda()
             label = pack[1].float().cuda()
             weight = pack[2].float().cuda()
-            pred_en, pred_de = model(data)
+            # 【AMP bf16】难例遍只包前向+损失，backward/step 原样(见第一遍注释)
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred_en, pred_de = model(data)
 
-            pred_en = torch.sigmoid(pred_en)
-            pred_de = torch.sigmoid(pred_de)
-            # 难例遍的损失与第一遍同构(编码端 0.5 + 解码端 1)，只是没有 break_loss(stage2 无该损失)
-            dice_loss_all = general_union_loss_lib(pred_en, label, weight) * 0.5 + \
-                            general_union_loss_lib(pred_de, label, weight)
-            loss =  dice_loss_all
+                pred_en = torch.sigmoid(pred_en)
+                pred_de = torch.sigmoid(pred_de)
+                # 难例遍的损失与第一遍同构(编码端 0.5 + 解码端 1)，只是没有 break_loss(stage2 无该损失)
+                dice_loss_all = general_union_loss_lib(pred_en, label, weight) * 0.5 + \
+                                general_union_loss_lib(pred_de, label, weight)
+                loss =  dice_loss_all
             optimizer.zero_grad()
             loss.backward()         # 第 2 次 backward：难例遍的独立参数更新
             optimizer.step()
@@ -1067,13 +1079,16 @@ def train(data_root,model_savepath,
             weight = weight.transpose(0, 1)
             data = torch.cat([data, data2], dim=1)
 
-            pred_en, pred_de = model(data)
-            pred_en = torch.sigmoid(pred_en)
-            pred_de = torch.sigmoid(pred_de)
-            # stage1 用不带 weight 的普通 Dice，两路输出等权相加(无 0.5 深监督折扣)
-            dice_loss_en = dice_loss(pred_en, label)
-            dice_loss_de = dice_loss(pred_de, label)
-            loss = dice_loss_de + dice_loss_en
+            # 【AMP bf16】前向+损失包进 autocast，归约/归一化自动保持 fp32；
+            # backward/optimizer.step 不动(master weights 仍 fp32)。详见 train3 首处注释。
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred_en, pred_de = model(data)
+                pred_en = torch.sigmoid(pred_en)
+                pred_de = torch.sigmoid(pred_de)
+                # stage1 用的是不带 weight 的普通 Dice，两条输出路径等权相加(无 0.5 深监督折扣)
+                dice_loss_en = dice_loss(pred_en, label)
+                dice_loss_de = dice_loss(pred_de, label)
+                loss = dice_loss_de + dice_loss_en
 
             optimizer.zero_grad()
             loss.backward()
@@ -1198,9 +1213,13 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
                 last_name = name
 
             x = x.cuda()
-            p0, p = model(x)                # 只取解码端 p 做推理，p0(编码端辅助头)忽略
-            p = torch.sigmoid(p)            # logits -> 概率，阈值判断前必须做
-            p = p.cpu().detach().numpy()    # 转回 CPU 再累加，省显存
+            # 【AMP bf16】验证前向也走 bf16 省显存(已在 no_grad 下，无需 scaler)；
+            # sigmoid 输出是 bf16，累加进整卷 numpy 之前必须 .float() 升回 fp32，
+            # 否则重叠滑窗的概率求和(多数体素累 4 次)会在 8 位尾数上丢精度
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                p0, p = model(x)                # 只取解码端 p 做推理，p0(编码端辅助头)忽略
+                p = torch.sigmoid(p)            # logits -> 概率，阈值判断前必须做
+            p = p.float().cpu().detach().numpy()    # 升 fp32 后转回 CPU 再累加，省显存
             pos = pos.numpy()               # pos[patch_idx] = 该 patch 的 (xl,xr,yl,yr,zl,zr) 切块坐标
             # 用 patch_idx 而非 i：避免遮蔽外层 dataloader 的 enumerate 计数变量 i
             for patch_idx in range(len(pos)):
