@@ -703,11 +703,13 @@ class OnlineHMData(Dataset):
     文件名前缀就是损失值(float)，按损失升序排序后取末尾 rate 比例(=损失最大的那部分)。
     调用处传 rate=1.0：缓存本身已只保留最难的前 30%，故全部读回。
     """
-    def __init__(self, data_root, batch_size, rate=0.33):
+    # 原签名带 batch_size 参数(类内从未使用)，已注释去除：
+    # def __init__(self, data_root, batch_size, rate=0.33):
+    def __init__(self, data_root, rate=0.33):
         self.data_root = data_root
-        # batch_size 为遗留参数：本类每 item 就是磁盘上单个难例 patch，类内从未使用它；
-        # 真实 batch 完全由 DataLoader 的 batch_size(=1) 决定
-        self.batch_size = batch_size
+        # 本类每 item 就是磁盘上单个难例 patch，真实 batch 完全由 DataLoader 的 batch_size 决定；
+        # 原 self.batch_size = batch_size 为无用赋值，已注释去除：
+        # self.batch_size = batch_size
         self.name_list = os.listdir(os.path.join(data_root, 'image'))
         # 按文件名前缀(=该 patch 的 GUL 损失)升序排序：越靠后越难
         self.name_list.sort(key=lambda x:float(x.split('_')[0]))
@@ -733,10 +735,13 @@ class OnlineHMData3(Dataset):
     OnlineHMData 的 stage3 版：多读一路 skel(骨架)，因为难例遍的损失含 atr_loss(break_loss)，
     必须有骨架作监督信号。排序/取末尾比例逻辑与 OnlineHMData 完全相同。
     """
-    def __init__(self, data_root, batch_size, rate=0.33):
+    # 原签名带 batch_size 参数(同 OnlineHMData，类内从未使用)，已注释去除：
+    # def __init__(self, data_root, batch_size, rate=0.33):
+    def __init__(self, data_root, rate=0.33):
         self.data_root = data_root
-        # batch_size 为遗留参数(同 OnlineHMData)：每 item 单个 patch，真实 batch 由 DataLoader 决定
-        self.batch_size = batch_size
+        # 同 OnlineHMData：每 item 单个 patch，真实 batch 由 DataLoader 决定；
+        # 原 self.batch_size = batch_size 为无用赋值，已注释去除：
+        # self.batch_size = batch_size
         self.name_list = os.listdir(os.path.join(data_root, 'image'))
         # 按文件名前缀(=损失值)升序排序，取末尾 rate 比例(最难的部分)
         self.name_list.sort(key=lambda x:float(x.split('_')[0]))

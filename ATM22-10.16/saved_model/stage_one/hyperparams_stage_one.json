@@ -1,0 +1,70 @@
+{
+  "stage": 1,
+  "stage_说明": "训练阶段编号(1=第一阶段)",
+  "model": {
+    "arch": "SE_UNet",
+    "in_channel": 2,
+    "n_classes": 1,
+    "说明": "SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率)"
+  },
+  "train": {
+    "max_epoches": 100,
+    "max_epoches_说明": "总 epoch 数",
+    "batch_size_per_case": 2,
+    "batch_size_per_case_说明": "Dataset 内部每病例采几个 patch(真实 batch)",
+    "dataloader_batch_size": 1,
+    "dataloader_batch_size_说明": "DataLoader 的 batch, 必须保持 1, 真实 batch 由 batch_size_per_case 决定(见 AirwayHMData 注释)",
+    "num_workers": 0,
+    "num_workers_说明": "DataLoader 子进程数, 0=主进程读",
+    "cube_size": 128,
+    "cube_size_说明": "CropSegData 内部随机裁剪的 patch 边长",
+    "aug": 1,
+    "aug_说明": "1=开启随机翻转增强",
+    "optimizer": "AdamW",
+    "optimizer_说明": "优化器类型, 初始学习率见 lr",
+    "lr": 0.0001,
+    "lr_说明": "AdamW 初始学习率",
+    "scheduler": "MultiStepLR",
+    "scheduler_说明": "学习率调度器, 到达 milestones 时把学习率乘 gamma",
+    "milestones": [
+      60,
+      90
+    ],
+    "milestones_说明": "MultiStepLR 衰减点(epoch)",
+    "gamma": 0.1,
+    "gamma_说明": "学习率衰减系数",
+    "loss": "dice_loss(无权重, en+de 两路等权相加)",
+    "loss_说明": "损失函数配置"
+  },
+  "validation": {
+    "DTI": 1,
+    "DTI_说明": "1=双阈值后处理, 0=固定 0.5 阈值",
+    "cube_size": 128,
+    "cube_size_说明": "验证滑窗块边长",
+    "step": 64,
+    "step_说明": "验证滑窗步长(重叠一半)",
+    "batch_size": 1,
+    "batch_size_说明": "SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)",
+    "fixed_threshold": 0.5,
+    "fixed_threshold_说明": "DTI=0 时使用的固定阈值",
+    "dti_h_thresh": 0.5,
+    "dti_h_thresh_说明": "DTI=1 时种子阈值(见 validation())",
+    "dti_l_thresh": 0.4,
+    "dti_l_thresh_说明": "DTI=1 时生长候选阈值(见 validation())"
+  },
+  "data": {
+    "data_root": "F:\\datasets\\ATM22\\TrainBatch1\\after_yxz",
+    "file_path": "./data/base_dict.json",
+    "file_root": "./data",
+    "说明": "data_root=数据根目录, file_path=病例列表, file_root=数据子目录"
+  },
+  "paths": {
+    "model_savepath": "./saved_model/stage_one",
+    "log_savepath": "./LOG/log_stage_one.txt",
+    "tensorboard_logdir": "./LOG/stage_one_10_17_1_11",
+    "说明": "model_savepath=权重目录, log_savepath=训练日志, tensorboard_logdir=TensorBoard 目录"
+  },
+  "gpu": "0",
+  "gpu_说明": "CUDA_VISIBLE_DEVICES 指定的 GPU 编号",
+  "_saved_at": "2026-10-17 01:11:27"
+}

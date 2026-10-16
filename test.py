@@ -243,7 +243,7 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
                                      last_name + '.mha'))
 
                     TD, BD, DSC, Pre, Sen, Spe, FPR, FNR = evaluation_case_test(
-                        pred, label, last_name, testlog_savepath, file_root)
+                        pred, label, last_name, file_root)
                     TDs.append(TD)
                     BDs.append(BD)
                     DSCs.append(DSC)
@@ -304,7 +304,7 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
             os.path.join(result_savepath, folder_name, last_name + '.mha'))
 
         TD, BD, DSC, Pre, Sen, Spe, FPR, FNR = evaluation_case_test(
-            pred, label, last_name, testlog_savepath, file_root)
+            pred, label, last_name, file_root)
         TDs.append(TD)
         BDs.append(BD)
         DSCs.append(DSC)
@@ -371,7 +371,7 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
         plt.show()
         # np.save('metrics of '+whichstage+'.npy', metrics)
 
-def evaluation_case_test(pred, label, name,testlog_savepath,file_root):
+def evaluation_case_test(pred, label, name, file_root):
     """
     单病例指标计算（测试版）。
 
@@ -436,7 +436,7 @@ if __name__ == '__main__':
     best_epoch = valid(log_path)
     model_stage = './saved_model/stage_three'
 
-    data_root = r'F:\datasets\ATM22\TrainBatch1\after'
+    data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
     file_path = './data/test.json'
     file_root = './data'
     result_savepath = './test_result'

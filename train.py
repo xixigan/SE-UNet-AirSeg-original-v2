@@ -255,7 +255,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     """
     stage=3                 # 标记当前阶段, 传给 validation() 决定是否计算 hard 指标
     max_epoches = 50         # 总 epoch 数
-    batch_size_per_case =1   # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
+    batch_size_per_case =2   # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
                              # 不是 DataLoader 的 batch_size！见下方 transpose(0,1) 说明
     aug_flag = aug
 
@@ -268,7 +268,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     lr_gamma = 0.1                   # 衰减系数
     hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
     hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
-    hm_dataloader_batch_size = 1     # 第二遍难例 DataLoader 的 batch
+    hm_dataloader_batch_size = 2     # 第二遍难例 DataLoader 的 batch
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
     val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
@@ -377,6 +377,8 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
                 'cache_dir': online_savepath,
                 'limits_ratio': hm_limits_ratio,
                 'limits_ratio_说明': '缓存上限 = 病例数 x batch x 该比例, 只留最难的前 30%',
+                'dataloader_batch_size': hm_dataloader_batch_size,
+                'dataloader_batch_size_说明': '第二遍难例回放的 DataLoader 真实 batch(每个 item 是磁盘上单个难例 patch)',
                 'cached_channels': ['image', 'label', 'weight', 'skel'],
                 'cached_channels_说明': '难例缓存保存的通道',
             },
@@ -527,11 +529,12 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         # print('start online hard mining: ')
         # rate=1.0 表示读取缓存目录中【全部】难例(而非按比例抽样)（缓存本身已取了limits_ratio比例）
         hm_dataset = OnlineHMData3(data_root=online_savepath,
-                                  batch_size=hm_dataloader_batch_size,
                                   rate=hm_rate)
+        # 原调用还传了 batch_size=hm_dataloader_batch_size，Dataset 内从未使用，已注释去除：
+        # hm_dataset = OnlineHMData3(data_root=online_savepath, batch_size=hm_dataloader_batch_size, rate=hm_rate)
         # OnlineHMData3 每个 item 就是磁盘上单个难例 patch(128^3)，
-        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch；Dataset 构造参数里的
-        # batch_size 是遗留未用。第二遍每 epoch 迭代次数 = 缓存难例数。
+        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch。
+        # 第二遍每 epoch 迭代次数 = 缓存难例数。
         hm_dataloader = DataLoader(dataset=hm_dataset,
                                    batch_size=hm_dataloader_batch_size,
                                    shuffle=True,
@@ -617,7 +620,7 @@ def train2(data_root,
     """
     stage=2
     max_epoches = 50
-    batch_size_per_case =1   # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
+    batch_size_per_case =2   # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
     aug_flag = aug
 
     # ===== 训练超参数集中定义(便于统一调参与复现) =====
@@ -629,7 +632,7 @@ def train2(data_root,
     lr_gamma = 0.1                   # 衰减系数
     hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
     hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
-    hm_dataloader_batch_size = 1     # 第二遍难例 DataLoader 的 batch
+    hm_dataloader_batch_size = 2     # 第二遍难例 DataLoader 的 batch
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
     val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
@@ -728,6 +731,8 @@ def train2(data_root,
                 'cache_dir': online_savepath,
                 'limits_ratio': hm_limits_ratio,
                 'limits_ratio_说明': '缓存上限 = 病例数 x batch x 该比例, 只留最难的前 30%',
+                'dataloader_batch_size': hm_dataloader_batch_size,
+                'dataloader_batch_size_说明': '第二遍难例回放的 DataLoader 真实 batch(每个 item 是磁盘上单个难例 patch)',
             },
             'start_model': start_model,
             'start_model_说明': '热启动来源(stage1 权重目录)',
@@ -856,11 +861,12 @@ def train2(data_root,
         # print('start online hard mining: ')
         # rate=1.0 表示读取缓存目录中【全部】难例(缓存本身已只保留最难的前 30%)
         hm_dataset = OnlineHMData(data_root=online_savepath,
-                                  batch_size=hm_dataloader_batch_size,
                                   rate=hm_rate)
+        # 原调用还传了 batch_size=hm_dataloader_batch_size，Dataset 内从未使用，已注释去除：
+        # hm_dataset = OnlineHMData(data_root=online_savepath, batch_size=hm_dataloader_batch_size, rate=hm_rate)
         # OnlineHMData 每个 item 就是磁盘上单个难例 patch(128^3)，
-        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch；Dataset 构造参数里的
-        # batch_size 是遗留未用。第二遍每 epoch 迭代次数 = 缓存难例数。
+        # 这里 DataLoader 的 batch_size=hm_dataloader_batch_size 就是真实 batch。
+        # 第二遍每 epoch 迭代次数 = 缓存难例数。
         hm_dataloader = DataLoader(dataset=hm_dataset,
                                    batch_size=hm_dataloader_batch_size,
                                    shuffle=True,
@@ -929,7 +935,7 @@ def train(data_root,model_savepath,
     """
     stage=1
     max_epoches = 100
-    batch_size_per_case =1
+    batch_size_per_case =2
     aug_flag = aug
 
     # ===== 训练超参数集中定义(便于统一调参与复现) =====
@@ -1295,9 +1301,13 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
                TD_mean, TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,FPR_mean,FPR_std,FNR_mean,FNR_std)
         with open(log_savepath, 'a') as file:
             file.writelines(['epoch:' + str(epoch)+'\n', line+'\n', '\n'])
-        # 逐病例指标落盘: 写到与日志同名不同后缀的 CSV(如 ./LOG/log_stage_two_case_metrics.csv)，
+        # 逐病例指标落盘: 写到与日志同名不同后缀的 CSV(如 ./LOG/log_stage_two_val_case_metrics.csv)，
+        # 后缀带 val 以明确这是验证集口径, 与测试集的 test_case_metrics.csv 区分开;
+        # 三个阶段(train/train2/train3)与 DTI 复验(dtival)都走本函数, 只是传入的
+        # log_savepath 不同(如 log_stage_two_dti.txt → log_stage_two_dti_val_case_metrics.csv),
+        # 后缀统一在这里生效;
         # 追加模式、每个 epoch 每病例一行，文件不存在时先写表头；不影响既有日志解析与评分逻辑
-        case_csv_path = os.path.splitext(log_savepath)[0] + '_case_metrics.csv'
+        case_csv_path = os.path.splitext(log_savepath)[0] + '_val_case_metrics.csv'
         _need_header = not os.path.exists(case_csv_path)
         with open(case_csv_path, 'a') as csv_file:
             if _need_header:
