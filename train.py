@@ -447,15 +447,23 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         # ============ 第一遍：主 dataloader 训练 ============
         # pack 顺序对应 AirwayHMData3.__getitem__ 返回的 data_list:
         #   [img_crops, img2_crops, label_crops, weight_crops, skel_crops]
+        # ==== DataLoader 形状链 (train_data_loader <- AirwayHMData3, stage3 第一遍) ====
+        # Dataset.__getitem__: 每个 item 读一个病例整卷, 内部裁 batch_size_per_case(记为 B) 个 patch,
+        #   五路各返回 (B, cube_size, cube_size, cube_size) —— 4 维, 没有通道维
+        # DataLoader(batch_size=dataloader_batch_size=1) collate 在最前再套一维:
+        #   pack[j].shape = (dataloader_batch_size, B, cube_size, cube_size, cube_size)
+        #   例: B=2, cube_size=128 -> pack[0].shape = (1, 2, 128, 128, 128)
+        # transpose(0,1) 后: (B, 1, cube_size, cube_size, cube_size), 中间的 1 即通道维 C
+        # cat 两窗后 data: (B, 2, cube_size, cube_size, cube_size), 例 (2, 2, 128, 128, 128)
         for iter, pack in enumerate(train_data_loader):
-            data = pack[0].float().cuda()     # 窗宽1(肺窗)归一化后的 patch
-            data2 = pack[1].float().cuda()    # 窗宽2(纵隔窗)归一化后的 patch
-            label = pack[2].float().cuda()    # 二值标注 0/1
-            weight = pack[3].float().cuda()   # 逐体素重要性权重(LIB_weight 的幂次)
-            skel = pack[4].float().cuda()     # 骨架，供 atr_loss 定位断点
+            data = pack[0].float().cuda()     # (1,B,cube,cube,cube)=(1,2,128,128,128) 窗宽1(肺窗)归一化 patch
+            data2 = pack[1].float().cuda()    # 同上形状, 窗宽2(纵隔窗)归一化 patch
+            label = pack[2].float().cuda()    # 同上形状, 二值标注 0/1
+            weight = pack[3].float().cuda()   # 同上形状, 逐体素重要性权重(LIB_weight 的幂次)
+            skel = pack[4].float().cuda()     # 同上形状, 骨架, 供 atr_loss 定位断点
 
-            # 维度变换：(1,B,C,Z,Y,X) -> (B,1,C,Z,Y,X)，把 Dataset 内部采出的 B 个 patch
-            # 从“被 DataLoader 多包的一维”里解放出来，还原成真正的 batch 维
+            # 维度变换：(1,B,Z,Y,X) -> (B,1,Z,Y,X)，把 Dataset 内部采出的 B 个 patch
+            # 从“被 DataLoader 多包的一维”里解放出来，还原成真正的 batch 维(中间的 1 即通道维 C)
             data = data.transpose(0, 1)
             data2 = data2.transpose(0, 1)
             label = label.transpose(0, 1)
@@ -469,7 +477,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
             # InstanceNorm/sum/pow 等归约类算子由 autocast 自动保持 fp32；
             # A4000 为 Ampere(cc8.6)支持 bf16，指数范围与 fp32 相同，无需 GradScaler。
             # backward/optimizer.step 保持原样(master weights 与 AdamW 状态仍是 fp32)。
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 # 模型是深监督结构：返回编码端与解码端两个预测头，都参与损失
                 pred_en, pred_de = model(data)
                 pred_en = torch.sigmoid(pred_en)   # 网络输出的是 logits，必须 sigmoid 才能当概率
@@ -541,16 +549,22 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
                                    num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
+        # ==== DataLoader 形状链 (hm_dataloader <- OnlineHMData3, stage3 第二遍难例) ====
+        # Dataset.__getitem__: 每个 item 就是磁盘上单个难例 patch 的 np 数组(第一遍已拼好双窗):
+        #   image (2, cube_size, cube_size, cube_size)
+        #   label/weight/skel (1, cube_size, cube_size, cube_size)
+        # DataLoader(batch_size=hm_dataloader_batch_size) 直接堆出真 batch, 故【不做 transpose(0,1)】:
+        #   pack[j].shape = (hm_dataloader_batch_size, C, cube_size, cube_size, cube_size)
+        #   例: hm_dataloader_batch_size=2, cube_size=128
+        #       data=(2,2,128,128,128)  label/weight/skel=(2,1,128,128,128)
         for iter, pack in enumerate(hm_dataloader):
-            # 难例已从磁盘读回，pack 顺序为 [image, label, weight, skel]，无 img2
-            # 注意：这里【不做 transpose(0,1)】，因为 OnlineHMData3 每个样本就是单个 patch，
-            # DataLoader 直接给出 (1,C,Z,Y,X)，本身就是合法的 batch=1 输入
-            data = pack[0].float().cuda()
-            label = pack[1].float().cuda()
-            weight = pack[2].float().cuda()
-            skel = pack[3].float().cuda()
+            # 难例已从磁盘读回, pack 顺序为 [image, label, weight, skel], 无 img2
+            data = pack[0].float().cuda()     # (hm_dataloader_batch_size,2,cube,cube,cube)=(2,2,128,128,128)
+            label = pack[1].float().cuda()    # (hm_dataloader_batch_size,1,cube,cube,cube)=(2,1,128,128,128)
+            weight = pack[2].float().cuda()   # 同 label 形状
+            skel = pack[3].float().cuda()     # 同 label 形状
             # 【AMP bf16】难例遍同样只包前向+损失，backward/step 原样(见第一遍注释)
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 pred_en, pred_de = model(data)
                 pred_en = torch.sigmoid(pred_en)
                 pred_de = torch.sigmoid(pred_de)
@@ -790,12 +804,19 @@ def train2(data_root,
             os.mkdir(online_savepath + '/label')
             os.mkdir(online_savepath + '/weight')
 
+        # ==== DataLoader 形状链 (train_data_loader <- AirwayHMData, stage2 第一遍) ====
+        # Dataset.__getitem__: 每个 item 读一个病例整卷, 内部裁 batch_size_per_case(记为 B) 个 patch,
+        #   四路各返回 (B, cube_size, cube_size, cube_size) —— 4 维无通道维(与 stage3 的区别: 无 skel)
+        # DataLoader(batch_size=dataloader_batch_size=1) collate 在最前再套一维:
+        #   pack[j].shape = (dataloader_batch_size, B, cube_size, cube_size, cube_size)
+        #   例: B=2, cube_size=128 -> pack[0].shape = (1, 2, 128, 128, 128)
+        # transpose(0,1) 后: (B, 1, cube_size^3); cat 两窗后 data: (B, 2, cube_size^3), 例 (2,2,128,128,128)
         for iter, pack in enumerate(train_data_loader):
             # pack 顺序对应 AirwayHMData 的 data_list: [img, img2, label, weight]（无 skel）
-            data = pack[0].float().cuda()
-            data2 = pack[1].float().cuda()
-            label = pack[2].float().cuda()
-            weight = pack[3].float().cuda()
+            data = pack[0].float().cuda()     # (1,B,cube,cube,cube)=(1,2,128,128,128) 窗宽1
+            data2 = pack[1].float().cuda()    # 同上形状, 窗宽2
+            label = pack[2].float().cuda()    # 同上形状, 二值标注
+            weight = pack[3].float().cuda()   # 同上形状, 逐体素权重
 
             # 同 train3：把 Dataset 内部采出的 B 个 patch 从 (1,B,...) 还原成 (B,1,...)
             data = data.transpose(0, 1)
@@ -806,7 +827,7 @@ def train2(data_root,
 
             # 【AMP bf16】前向+损失包进 autocast，归约/归一化自动保持 fp32；
             # backward/optimizer.step 不动(master weights 仍 fp32)。详见 train3 首处注释。
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 pred_en, pred_de = model(data)
                 pred_en = torch.sigmoid(pred_en)   # logits -> 概率
                 pred_de = torch.sigmoid(pred_de)
@@ -873,15 +894,21 @@ def train2(data_root,
                                    num_workers=num_workers,
                                    pin_memory=True,
                                    drop_last=True)
+        # ==== DataLoader 形状链 (hm_dataloader <- OnlineHMData, stage2 第二遍难例) ====
+        # Dataset.__getitem__: 每个 item 就是磁盘上单个难例 patch 的 np 数组(第一遍已拼好双窗):
+        #   image (2, cube_size, cube_size, cube_size)
+        #   label/weight (1, cube_size, cube_size, cube_size)
+        # DataLoader(batch_size=hm_dataloader_batch_size) 直接堆出真 batch, 故【不做 transpose(0,1)】:
+        #   pack[j].shape = (hm_dataloader_batch_size, C, cube_size, cube_size, cube_size)
+        #   例: hm_dataloader_batch_size=2, cube_size=128
+        #       data=(2,2,128,128,128)  label/weight=(2,1,128,128,128)
         for iter, pack in enumerate(hm_dataloader):
-            # 难例已从磁盘读回，pack 顺序为 [image, label, weight]，无 img2
-            # 不做 transpose(0,1)：OnlineHMData 每个样本就是单个 patch，
-            # DataLoader 直接给出 (1,C,Z,Y,X)，本身就是合法的 batch=1 输入
-            data = pack[0].float().cuda()
-            label = pack[1].float().cuda()
-            weight = pack[2].float().cuda()
+            # 难例已从磁盘读回, pack 顺序为 [image, label, weight], 无 img2
+            data = pack[0].float().cuda()     # (hm_dataloader_batch_size,2,cube,cube,cube)=(2,2,128,128,128)
+            label = pack[1].float().cuda()    # (hm_dataloader_batch_size,1,cube,cube,cube)=(2,1,128,128,128)
+            weight = pack[2].float().cuda()   # 同 label 形状
             # 【AMP bf16】难例遍只包前向+损失，backward/step 原样(见第一遍注释)
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 pred_en, pred_de = model(data)
 
                 pred_en = torch.sigmoid(pred_en)
@@ -1072,14 +1099,21 @@ def train(data_root,model_savepath,
     model.train()
     starttime = time.time()
     for ep in range(max_epoches):
+        # ==== DataLoader 形状链 (train_data_loader <- CropSegData, stage1 唯一一遍) ====
+        # Dataset.__getitem__: 每个 item 读一个病例整卷, 随机裁 batch_size_per_case(记为 B) 个 patch,
+        #   返回 (img, img2, label, weight, name) 五路; 前四路各 (B, cube_size, cube_size, cube_size)
+        #   —— 4 维无通道维; name 是病例名字符串(本循环未使用, 不参与形状计算)
+        # DataLoader(batch_size=dataloader_batch_size=1) collate 在最前再套一维:
+        #   pack[j].shape = (dataloader_batch_size, B, cube_size, cube_size, cube_size)
+        #   例: B=2, cube_size=128 -> pack[0].shape = (1, 2, 128, 128, 128)
+        # transpose(0,1) 后: (B, 1, cube_size^3); cat 两窗后 data: (B, 2, cube_size^3), 例 (2,2,128,128,128)
         for iter, pack in enumerate(train_data_loader):
-            data = pack[0].float().cuda()
-            data2 = pack[1].float().cuda()
-            label = pack[2].float().cuda()
-            weight = pack[3].float().cuda()
+            data = pack[0].float().cuda()     # (1,B,cube,cube,cube)=(1,2,128,128,128) 窗宽1
+            data2 = pack[1].float().cuda()    # 同上形状, 窗宽2
+            label = pack[2].float().cuda()    # 同上形状, 二值标注
+            weight = pack[3].float().cuda()   # 同上形状, 逐体素权重
 
-            data = data.transpose(
-                0, 1)
+            data = data.transpose(0, 1)
             data2 = data2.transpose(0, 1)
             label = label.transpose(0, 1)
             weight = weight.transpose(0, 1)
@@ -1087,7 +1121,7 @@ def train(data_root,model_savepath,
 
             # 【AMP bf16】前向+损失包进 autocast，归约/归一化自动保持 fp32；
             # backward/optimizer.step 不动(master weights 仍 fp32)。详见 train3 首处注释。
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 pred_en, pred_de = model(data)
                 pred_en = torch.sigmoid(pred_en)
                 pred_de = torch.sigmoid(pred_de)
@@ -1161,8 +1195,16 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
         # 之后才读新病例 label、重置累加器。首个 batch 时 last_name='' 不会误结算(有 if last_name!='' 守卫)。
         # 注意：最后一个病例在循环结束时也不会遇到"新病例"来触发本分支，它的融合概率还躺在
         # pred/pred_num 里，须由循环外那段"原样重复"的收尾代码补结算(见循环外注释)。
+        # ==== DataLoader 形状链 (valid_dataloader <- SegValCropData, stage1/2/3 共用验证) ====
+        # Dataset.__getitem__: 每个 item 是整卷滑窗序列中的一个块:
+        #   img_crop (2, val_cube_size, val_cube_size, val_cube_size) 双窗已堆好通道
+        #   name 病例名字符串; pos (6,) = 该块在整卷中的坐标 [xl,xr,yl,yr,zl,zr]
+        # DataLoader(batch_size=val_batch_size_per_case_and_dataloader=1) 在最前套一维:
+        #   x=(1, 2, val_cube_size, val_cube_size, val_cube_size); name=1 元素列表; pos=(1, 6)
+        #   例: val_cube_size=128 -> x.shape = (1, 2, 128, 128, 128)
+        # 与训练不同: 验证每 item 就是单块标准 5D 输入, 全程无 transpose(0,1) 还原操作
         for i, (x, name, pos) in enumerate(valid_dataloader):
-            name = name[0]
+            name = name[0]                    # 从 1 元素列表里取回病例名字符串
             if name != last_name:
                 if last_name != '':
                     pred = pred / pred_num
@@ -1222,7 +1264,7 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
             # 【AMP bf16】验证前向也走 bf16 省显存(已在 no_grad 下，无需 scaler)；
             # sigmoid 输出是 bf16，累加进整卷 numpy 之前必须 .float() 升回 fp32，
             # 否则重叠滑窗的概率求和(多数体素累 4 次)会在 8 位尾数上丢精度
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 p0, p = model(x)                # 只取解码端 p 做推理，p0(编码端辅助头)忽略
                 p = torch.sigmoid(p)            # logits -> 概率，阈值判断前必须做
             p = p.float().cpu().detach().numpy()    # 升 fp32 后转回 CPU 再累加，省显存
@@ -1564,7 +1606,7 @@ if __name__ == '__main__':
     
     gpu = '0'
 
-    ###################################### TRAIN_STAGE_1################################################################14 bs
+    #######################################TRAIN_STAGE_1##############################################################
     data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
     file_path = './data/base_dict.json'
     file_root = './data'
@@ -1574,11 +1616,11 @@ if __name__ == '__main__':
     DTI = 1 
     s1_epes=train(data_root, model_savepath, log_savepath, aug, DTI, file_path,file_root, gpu)
 
-    ##################################### STAGE_1_PRED
+    ######################################STAGE_1_PRED#################################################
     pred1_path = './data/pred_1'
     save_gradients_tw(data_root,stage_load=model_savepath,file_root=file_root,savepath=pred1_path,file_path=file_path,layer=0,gpu=gpu,s1_epes=s1_epes)
 
-    ###################################### TRAIN_STAGE_2################################################################14 bs
+    #######################################TRAIN_STAGE_2################################################################
     start_model = './saved_model/stage_one/'
     start_epoch = s1_epes-1
 
@@ -1590,7 +1632,7 @@ if __name__ == '__main__':
     DTI = 0
     train2(data_root, model_savepath, online_savepath, log_savepath,pred1_path, aug, DTI, start_model, start_epoch, file_path, file_root, gpu)
 
-    ###################################### STAGE_2_PRED/BR-wi/br_skel################################################################14 bs
+    #######################################STAGE_2_PRED/BR-wi/br_skel#####################################################
     epoch = valid_recall(log_savepath)
     whichepoch = './saved_model/stage_two/SE_UNet_{}.pth'.format(epoch)
     pred2_path = './data/pred_2'
@@ -1600,7 +1642,7 @@ if __name__ == '__main__':
     br_skel_path = './data/br_skel'
     save_weight_break(data_root, pred2_path, BR_weight_path, br_skel_path,file_path)
 
-    ###################################### TRAIN_STAGE_3################################################################14 bs
+    #######################################TRAIN_STAGE_3################################################################
     data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
     start_model = './saved_model/stage_two/'
     start_epoch = epoch

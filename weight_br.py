@@ -237,6 +237,8 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
         w_br = w_br.astype(np.float16)
         lamda=0.7
         # 融合两种权重: (w_br + w_hm)*0.7 + 0.3, 全图先抬到 ≥0.3
+        # 理论上界(与具体 case 无关): w_br 封顶=2, w_hm=hard_mining²(0/1)×D²(≤1)≤1,
+        # 故 max=(2+1)*0.7+0.3=2.4; 只要断段核心体素同时取到 w_br=2、w_hm=1 就打满
         w_br=(w_br+w_hm)*lamda+1-lamda
         # 最后乘 hard_mining: 只保留"与断点相关联的气道体素"上的权重,
         # 背景与正常气道区域归 0, 训练时损失在这些体素上被放大
@@ -247,6 +249,12 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
         # 断点坐标落盘: np.where 返回 (Z轴坐标数组, Y轴坐标数组, X轴坐标数组) 三元组
         np.save(os.path.join(savepath3, name+'.npy'),np.where(br_skel==1))
         # 打印完整信息: 病例名 + 有断点说明 + 权重范围(原独立的 min/max 打印已合并至此)
+        # 注意 min/max 是公式的结构性常数(min=0: 背景被 hard_mining 清零; max=2.4 封顶),
+        # 各 case 相同属正常现象, case 间真正差异体现在非零体素的数量与分布上。
+        # 为何显示 2.40234375 而不是 2.4: w_br 是 float16, fp16 在 2.x 区间精度为
+        # 2^-9=0.001953125, 存不下 2.4, 实际存的是最近可表示值 2.40234375;
+        # float() 把该 fp16 真值精确展开成 float64 打印, 旧版 print(numpy 标量)则显示
+        # numpy 的最短表示 2.402 —— 两者是同一个数, 磁盘数据不变。
         print('[save_weight_break] name:', name,
               '| 该 case 存在骨架断点, 已完成权重计算,',
               '已保存权重图, 权重 min:', float(np.min(w_br)), '| 权重 max:', float(np.max(w_br)))
