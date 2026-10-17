@@ -112,7 +112,7 @@ def general_union_loss_lib(pred, target, weight):
     即“漏检一个真阳”的惩罚是“多预测一个假阳”的 4 倍，
     再叠加 weight 在标注内可达数十倍，会强烈鼓励模型过度预测。
     """
-    smooth = 1.0
+    smooth = 1.0  # 平滑项，防止 0/0 得到 NaN
     alpha = 0.2  # alpha=0.1 in stage1 and 0.2 in stage2  # 乘在 pred 上 -> 惩罚假阳(FP)
     beta = 1 - alpha          # 乘在 target 上 -> 惩罚假阴(FN)
     sigma1 = 0.0001
@@ -1642,7 +1642,7 @@ if __name__ == '__main__':
     br_skel_path = './data/br_skel'
     save_weight_break(data_root, pred2_path, BR_weight_path, br_skel_path,file_path)
 
-    #######################################TRAIN_STAGE_3################################################################
+    ########################################TRAIN_STAGE_3################################################################
     data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
     start_model = './saved_model/stage_two/'
     start_epoch = epoch

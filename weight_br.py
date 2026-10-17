@@ -39,19 +39,15 @@ def save_s2_pred(data_root, whichepoch, savepath,file_path, gpu):
     case_net.cuda()
     case_net.eval()  # 关键修复: 推理必须 eval(), train() 会让 BatchNorm 使用 batch 统计量并保留中间激活
     # load data
-    file_list = load_json_file( file_path,
-                                folder='0',
-                                mode=['train', 'val'])
+    file_list = load_json_file(file_path, folder='0', mode=['train', 'val'])
     file_list.sort()
     for idx in range(len(file_list)):
         name = file_list[idx]
-        img0, origin, spacing, direction = load_itk_image(data_root + '/data/' + name + 'data_cut' +
-                             '.mha')
+        img0, origin, spacing, direction = load_itk_image(data_root+'/data/'+name+'data_cut'+'.mha')
 
         img0=img0-1024
 
-        label, origin, spacing, direction = load_itk_image(data_root + '/mask/' + name + 'mask_cut' +
-                               '.mha')
+        label, origin, spacing, direction = load_itk_image(data_root+'/mask/'+name+'mask_cut'+'.mha')
         img, img2 = process_img(img0)
 
         # calculate gradients
