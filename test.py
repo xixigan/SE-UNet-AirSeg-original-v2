@@ -339,8 +339,11 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
         line = "TD: %0.4f (%0.4f), BD: %0.4f (%0.4f), DSC: %0.4f (%0.4f), Pre: %0.4f (%0.4f), Sen: %0.4f (%0.4f), Spe: %0.4f (%0.4f), FPR: %0.4f (%0.4f), FNR: %0.4f (%0.4f)" % (
             TD_mean, TD_std, BD_mean, BD_std, DSC_mean, DSC_std, Pre_mean,
             Pre_std, Sen_mean, Sen_std, Spe_mean, Spe_std, FPR_mean, FPR_std, FNR_mean, FNR_std)
+        # 与 train.py validation() 的日志格式对齐: 先写 "epoch:N" 行再写指标行，
+        # 末尾补空行凑成"epoch行/指标行/空行"三条一组，便于人工核对本次测试所用 epoch
+        # (test 只跑一次、无循环, best_epoch 由 valid() 从训练日志选出, 此处显式落盘留痕)
         with open(testlog_savepath, 'a') as file:
-            file.writelines([line + '\n'])
+            file.writelines(['epoch:' + str(best_epoch) + '\n', line + '\n', '\n'])
         # 逐病例指标落盘: 写到与测试日志同名不同后缀的 CSV(如 ./LOG/testlog_stage_three_case_metrics.csv)，
         # 每病例一行；epoch 列记录本次测试所用的 best_epoch；文件不存在时先写表头
         case_csv_path = os.path.splitext(testlog_savepath)[0] + '_case_metrics.csv'
