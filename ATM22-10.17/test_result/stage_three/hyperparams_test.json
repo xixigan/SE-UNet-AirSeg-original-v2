@@ -1,0 +1,48 @@
+{
+  "task": "测试(滑窗推理+后处理+指标计算)",
+  "model": {
+    "arch": "SE_UNet",
+    "in_channel": 2,
+    "n_classes": 1,
+    "model_stage": "./saved_model/stage_three",
+    "weights": "./saved_model/stage_three/SE_UNet_24.pth",
+    "epoch": 24,
+    "说明": "SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率); model_stage=权重所属阶段目录, weights/epoch=测试所用权重与 epoch 号"
+  },
+  "inference": {
+    "cube_size": 128,
+    "cube_size_说明": "滑窗推理块边长",
+    "step": 64,
+    "step_说明": "滑窗步长(重叠一半)",
+    "dataset_batch_size": 1,
+    "dataset_batch_size_说明": "Dataset 补齐基数(per_case) and DataLoader batch 共用同一个变量, 两者必须相等",
+    "dataloader_batch_size": 1,
+    "dataloader_batch_size_说明": "DataLoader 的 batch, 与 dataset_batch_size 共用同一个变量",
+    "num_workers": 0,
+    "num_workers_说明": "DataLoader 子进程数, 0=主进程读"
+  },
+  "postprocess": {
+    "DTI": 1,
+    "DTI_说明": "1=双阈值受约束生长; 0=固定 0.5 阈值",
+    "fixed_threshold": 0.5,
+    "fixed_threshold_说明": "DTI=0 时使用的固定阈值",
+    "dti_h_thresh": 0.5,
+    "dti_h_thresh_说明": "DTI=1 时种子阈值",
+    "dti_l_thresh": 0.35,
+    "dti_l_thresh_说明": "DTI=1 时生长候选阈值"
+  },
+  "data": {
+    "data_root": "F:\\datasets\\ATM22\\TrainBatch1\\after_yxz",
+    "file_path": "./data/test.json",
+    "file_root": "./data",
+    "说明": "data_root=数据根目录, file_path=病例列表, file_root=数据子目录"
+  },
+  "paths": {
+    "result_savepath": "./test_result",
+    "testlog_savepath": "./LOG/test_log_stage_three.txt",
+    "说明": "result_savepath=结果输出根目录, testlog_savepath=测试日志路径"
+  },
+  "gpu": "0",
+  "gpu_说明": "CUDA_VISIBLE_DEVICES 指定的 GPU 编号",
+  "_saved_at": "2026-10-18 12:38:26"
+}

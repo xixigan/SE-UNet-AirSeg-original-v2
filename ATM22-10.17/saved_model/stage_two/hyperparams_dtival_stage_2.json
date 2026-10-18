@@ -1,0 +1,41 @@
+{
+  "task": "DTI 复验(双阈值口径重新评估已训好的 epoch)",
+  "stage": 2,
+  "stage_说明": "被复验权重所属的训练阶段编号",
+  "model": {
+    "arch": "SE_UNet",
+    "in_channel": 2,
+    "n_classes": 1,
+    "weights": "./saved_model/stage_two\\SE_UNet_10.pth",
+    "epoch": 10,
+    "说明": "SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率); weights/epoch=被复验的权重文件与 epoch 号"
+  },
+  "validation": {
+    "DTI": 1,
+    "DTI_说明": "本函数固定用 DTI=1 双阈值后处理口径",
+    "cube_size": 128,
+    "cube_size_说明": "验证滑窗块边长",
+    "step": 64,
+    "step_说明": "验证滑窗步长(重叠一半)",
+    "batch_size": 1,
+    "batch_size_说明": "SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)",
+    "dti_h_thresh": 0.5,
+    "dti_h_thresh_说明": "种子阈值(见 validation())",
+    "dti_l_thresh": 0.4,
+    "dti_l_thresh_说明": "生长候选阈值(见 validation())"
+  },
+  "data": {
+    "data_root": "F:\\datasets\\ATM22\\TrainBatch1\\after_yxz",
+    "file_path": "./data/base_dict.json",
+    "file_root": "./data",
+    "说明": "data_root=数据根目录, file_path=病例列表, file_root=数据子目录"
+  },
+  "paths": {
+    "model_savepath": "./saved_model/stage_two",
+    "dti_log_savepath": "./LOG/log_stage_two_dti.txt",
+    "说明": "model_savepath=权重目录(复验 JSON 也存这里), dti_log_savepath=复验结果独立日志路径"
+  },
+  "gpu": "0",
+  "gpu_说明": "CUDA_VISIBLE_DEVICES 指定的 GPU 编号",
+  "_saved_at": "2026-10-18 04:42:29"
+}
