@@ -11,6 +11,7 @@ from skimage.morphology import skeletonize_3d,binary_dilation
 from SE_UNet import SE_UNet
 from data import load_json_file
 from util import load_itk_image, save_itk
+from metrics import read_val_csv   # 共享的验证汇总 CSV 解析函数(全部 8 个均值列)
 
 torch.manual_seed(777) # cpu
 torch.cuda.manual_seed(777) #gpu
@@ -258,30 +259,20 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
 
 
 def valid_recall(log_path):
+    """
+    从验证汇总 CSV 日志挑"最佳 epoch"(偏召回口径)。
 
-    with open(log_path, 'r') as file:
-        lines=file.readlines()
-    m_lines=[]
-    for l in range(len(lines)):
-        if l%3==1:
-            m_lines.append(lines[l])
-    TD=[]
-    BD=[]
-    DSC=[]
-    Pre=[]
-    Sen=[]
-    SCORE=[]
-    for l in m_lines:
-        TD.append(float(re.findall(r'TD: (.*?) ', l)[0]))
-        BD.append(float(re.findall(r'BD: (.*?) ', l)[0]))
-        DSC.append(float(re.findall(r'DSC: (.*?) ', l)[0]))
-        Pre.append(float(re.findall(r'Pre: (.*?) ', l)[0]))
-        Sen.append(float(re.findall(r'Sen: (.*?) ', l)[0]))
-    for l in range(len(TD)):
-        SCORE.append((TD[l]+BD[l])*0.15+(DSC[l]+Pre[l])*0.2+Sen[l]*0.3)
-
-    print('第',SCORE.index(max(SCORE)),'个epoch验证效果最佳，分数为',max(SCORE))
-    return SCORE.index(max(SCORE))
+    打分公式(与 train.py valid_recall 一致)：SCORE = (TD+BD)*0.15 + (DSC+Pre)*0.2 + Sen*0.3
+    CSV 契约(与 train.py validation() 写入端一致)：首行表头 epoch,TD_mean,...,FNR_std，
+    每个 epoch 一行；返回日志里记录的【真实 epoch 号】(epoch 列)，
+    旧 txt 时代"返回列表下标可能错位"的坑已随格式切换一并废弃。
+    """
+    records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py; 全部 8 个均值已解析
+    SCORE = [(r['TD'] + r['BD']) * 0.15 + (r['DSC'] + r['Pre']) * 0.2 + r['Sen'] * 0.3
+             for r in records]
+    best = SCORE.index(max(SCORE))
+    print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
+    return records[best]['epoch']
 
 
 def get_gpu_mem_info(gpu_id=0):
@@ -320,7 +311,7 @@ if __name__ == '__main__':
 
 
 
-    log_path = './LOG/log_stage_two.txt'
+    log_path = './LOG/log_stage_two.csv'
     epoch = valid_recall(log_path)
     whichepoch = './saved_model/stage_two/SE_UNet_{}.pth'.format(epoch)
     savepath='./data/pred_2'

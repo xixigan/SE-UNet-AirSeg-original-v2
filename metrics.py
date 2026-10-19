@@ -154,3 +154,39 @@ def precision_calculation(pred, label, smooth=1e-5):
     # 分母 sum(pred) = 预测总体素数 = TP + FP
     precision = round(tp * 100 / (np.sum(pred) + smooth), 3)
     return precision #Pre
+
+
+def read_val_csv(log_path):
+    """
+    读取 train.py validation() 落盘的验证汇总 CSV，返回记录字典列表。
+    train.py / test.py / weight_br.py 三处选模型函数共用本解析逻辑，
+    避免 CSV 契约变更时多处内联代码漏改。
+
+    CSV 契约(与 validation() 写入端一一对应)：
+      表头 epoch,TD_mean,TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,Pre_std,
+                 Sen_mean,Sen_std,Spe_mean,Spe_std,FPR_mean,FPR_std,FNR_mean,FNR_std
+      每个 epoch 一行；本函数把【全部 8 个均值列】(TD/BD/DSC/Pre/Sen/Spe/FPR/FNR)
+      都解析进记录字典(float), std 列暂不解析, 需要时在循环内加一行即可。
+      选模型公式(valid_recall/valid)各取所需, 其余均值供分析/画图直接可用。
+    兼容保护：首行首列不是 epoch(如旧版三行制 txt)时直接报错，避免静默解析出错。
+
+    :param log_path: 验证汇总 CSV 路径(如 log_stage_two.csv)
+    :return: records —— 每个 epoch 一个字典, 键为 'epoch'(真实 epoch 号, int)
+             和 8 个指标均值名(TD/BD/DSC/Pre/Sen/Spe/FPR/FNR, float)
+    """
+    with open(log_path, 'r') as file:
+        lines = [l.strip() for l in file.readlines() if l.strip()]   # 去空行
+    if not lines:
+        raise FileNotFoundError('验证日志为空: ' + log_path)
+    header = lines[0].split(',')
+    if header[0] != 'epoch':
+        raise ValueError('日志不是 CSV 格式(首列应为 epoch)。旧版 txt 日志请用新代码重跑生成 CSV: ' + log_path)
+    records = []
+    for l in lines[1:]:
+        row = dict(zip(header, l.split(',')))   # 按表头名取列，不写死列序
+        rec = {'epoch': int(float(row['epoch']))}
+        # 8 个指标均值全部解析: 选模型只用其中一部分, 但调用方随时可取其余列
+        for k in ('TD', 'BD', 'DSC', 'Pre', 'Sen', 'Spe', 'FPR', 'FNR'):
+            rec[k] = float(row[k + '_mean'])
+        records.append(rec)
+    return records

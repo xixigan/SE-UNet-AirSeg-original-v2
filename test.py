@@ -5,7 +5,7 @@ SE-UNet 气道分割：独立测试入口
 与 train.py 的区别：
   train.py 的 validation()  : 训练过程中每个 epoch 末跑一次，用于选模型
   test.py  的 test()        : 训练全部结束后，用选定的 best_epoch 权重在测试集上跑一次
-流程：读 log_stage_three.txt 选最佳 epoch -> 加载 stage_three 权重 -> 滑窗推理
+流程：读 log_stage_three.csv 选最佳 epoch -> 加载 stage_three 权重 -> 滑窗推理
      -> DTI 后处理 -> 边缘剪裁 -> 取最大连通域 -> 算指标 + 存 mha + 画箱线图
 """
 import numpy as np
@@ -73,40 +73,20 @@ def double_threshold_iteration(pred, h_thresh, l_thresh):
 
 def valid(log_path):
     """
-    从训练日志挑最佳 epoch。SCORE = (TD+BD+DSC+Pre)/4，四项等权平均。
+    从验证汇总 CSV 日志挑最佳 epoch。SCORE = (TD+BD+DSC+Pre)/4，四项等权平均。
 
     与 train.py 的 valid_recall() 公式不同(那个偏召回)，故同一份日志可能选出不同 epoch。
-    日志约定每 3 行一条记录(epoch行/指标行/空行)，所以用 l%3==1 抽指标行。
-    【风险】返回的是“记录列表下标”而非日志里写的真实 epoch 号；
-    若日志被额外追加过记录，下标就会错位，拼出从未训练过的权重名并抛 FileNotFoundError。
+    CSV 契约(与 train.py validation() 写入端一致)：首行表头
+      epoch,TD_mean,TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,...,FNR_mean,FNR_std
+    每个 epoch 一行。返回日志里记录的【真实 epoch 号】(epoch 列)，
+    旧 txt 时代"返回列表下标可能错位"的坑已随格式切换一并废弃。
     """
-    with open(log_path, 'r') as file:
-        lines=file.readlines()
-    m_lines=[]
-    for l in range(len(lines)):
-        if l%3==1:
-            m_lines.append(lines[l])
-    TD=[]
-    BD=[]
-    DSC=[]
-    Pre=[]
-    Sen=[]
-    Spe=[]
-    SCORE=[]
-    for l in m_lines:
-        TD.append(float(re.findall(r'TD: (.*?) ', l)[0]))
-        BD.append(float(re.findall(r'BD: (.*?) ', l)[0]))
-        DSC.append(float(re.findall(r'DSC: (.*?) ', l)[0]))
-        Pre.append(float(re.findall(r'Pre: (.*?) ', l)[0]))
-        Sen.append(float(re.findall(r'Sen: (.*?) ', l)[0]))
-        Spe.append(float(re.findall(r'Spe: (.*?) ', l)[0]))
-    for l in range(len(TD)):
-        SCORE.append((TD[l]+BD[l]+DSC[l]+Pre[l])/4)#原作者代码权重
-        # SCORE.append(TD[l]*0.3 + BD[l]*0.3 + DSC[l]*0.1 + Pre[l]*0.1 + Sen[l]*0.1 + Spe[l]*0.1)
-
-
-    print('第',SCORE.index(max(SCORE)),'个epoch验证效果最佳，分数为',max(SCORE))
-    return SCORE.index(max(SCORE))
+    records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py; 全部 8 个均值已解析
+    SCORE = [(r['TD'] + r['BD'] + r['DSC'] + r['Pre']) / 4 for r in records]  # 原作者代码权重
+        # 备选公式: TD*0.3 + BD*0.3 + DSC*0.1 + Pre*0.1 + Sen*0.1 + Spe*0.1
+    best = SCORE.index(max(SCORE))
+    print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
+    return records[best]['epoch']
 
 def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
          DTI, file_path, file_root, gpu):
@@ -336,14 +316,23 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
             "TD: %0.4f (%0.4f), BD: %0.4f (%0.4f), DSC: %0.4f (%0.4f), Pre: %0.4f (%0.4f), Sen: %0.4f (%0.4f), Spe: %0.4f (%0.4f), FPR: %0.4f (%0.4f), FNR: %0.4f (%0.4f)"
             % (TD_mean, TD_std, BD_mean, BD_std, DSC_mean, DSC_std, Pre_mean,
                Pre_std, Sen_mean, Sen_std, Spe_mean, Spe_std, FPR_mean, FPR_std, FNR_mean, FNR_std))
-        line = "TD: %0.4f (%0.4f), BD: %0.4f (%0.4f), DSC: %0.4f (%0.4f), Pre: %0.4f (%0.4f), Sen: %0.4f (%0.4f), Spe: %0.4f (%0.4f), FPR: %0.4f (%0.4f), FNR: %0.4f (%0.4f)" % (
-            TD_mean, TD_std, BD_mean, BD_std, DSC_mean, DSC_std, Pre_mean,
-            Pre_std, Sen_mean, Sen_std, Spe_mean, Spe_std, FPR_mean, FPR_std, FNR_mean, FNR_std)
-        # 与 train.py validation() 的日志格式对齐: 先写 "epoch:N" 行再写指标行，
-        # 末尾补空行凑成"epoch行/指标行/空行"三条一组，便于人工核对本次测试所用 epoch
-        # (test 只跑一次、无循环, best_epoch 由 valid() 从训练日志选出, 此处显式落盘留痕)
+        # ===== 测试汇总日志: CSV 落盘, 表头/列序与 train.py validation() 的 CSV 契约完全一致 =====
+        # 每次测试追加一行; epoch 列记录本次测试所用的 best_epoch(显式落盘留痕)
+        _need_header = not os.path.exists(testlog_savepath)
         with open(testlog_savepath, 'a') as file:
-            file.writelines(['epoch:' + str(best_epoch) + '\n', line + '\n', '\n'])
+            if _need_header:
+                file.writelines('epoch,TD_mean,TD_std,BD_mean,BD_std,DSC_mean,DSC_std,'
+                                'Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,'
+                                'FPR_mean,FPR_std,FNR_mean,FNR_std\n')
+            file.writelines(','.join([str(best_epoch),
+                                      '%0.4f' % TD_mean, '%0.4f' % TD_std,
+                                      '%0.4f' % BD_mean, '%0.4f' % BD_std,
+                                      '%0.4f' % DSC_mean, '%0.4f' % DSC_std,
+                                      '%0.4f' % Pre_mean, '%0.4f' % Pre_std,
+                                      '%0.4f' % Sen_mean, '%0.4f' % Sen_std,
+                                      '%0.4f' % Spe_mean, '%0.4f' % Spe_std,
+                                      '%0.4f' % FPR_mean, '%0.4f' % FPR_std,
+                                      '%0.4f' % FNR_mean, '%0.4f' % FNR_std]) + '\n')
         # 逐病例指标落盘: 写到与测试日志同名不同后缀的 CSV(如 ./LOG/testlog_stage_three_case_metrics.csv)，
         # 每病例一行；epoch 列记录本次测试所用的 best_epoch；文件不存在时先写表头
         case_csv_path = os.path.splitext(testlog_savepath)[0] + '_case_metrics.csv'
@@ -435,7 +424,7 @@ if __name__ == '__main__':
     gpu = ','.join(
         [str(x) for x in list(np.where(free > lm_per_gpu)[0][0:gpu_need_num])])
 
-    log_path = './LOG/log_stage_three.txt'
+    log_path = './LOG/log_stage_three.csv'
     best_epoch = valid(log_path)
     model_stage = './saved_model/stage_three'
 
@@ -443,7 +432,7 @@ if __name__ == '__main__':
     file_path = './data/test.json'
     file_root = './data'
     result_savepath = './test_result'
-    testlog_savepath = './LOG/test_log_stage_three.txt'
+    testlog_savepath = './LOG/test_log_stage_three.csv'
     DTI = 1
 
     test(data_root,model_stage, best_epoch, testlog_savepath, result_savepath, DTI,

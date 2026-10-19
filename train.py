@@ -243,7 +243,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     :param data_root     : 预处理后数据根目录(含 data/ 与 mask/ 子目录)
     :param model_savepath: 本阶段权重输出目录, 如 ./saved_model/stage_three
     :param online_savepath: 在线难例挖掘的磁盘缓存目录(每 epoch 重建)
-    :param log_savepath  : 文本验证日志, 如 ./LOG/log_stage_three.txt
+    :param log_savepath  : 验证汇总 CSV 日志, 如 ./LOG/log_stage_three.csv
     :param pred2_path    : stage2 的预测结果目录(作为“已做对的区域”参考)
     :param aug           : 1=开启数据增强(随机翻转), 0=关闭
     :param DTI           : 1=验证时用双阈值后处理, 0=用固定 0.5 阈值
@@ -1153,7 +1153,7 @@ def train(data_root,model_savepath,
 
         print('')
         # 注意：stage1 只在【最后一个 epoch】才跑验证。
-        # 因此 log_stage_one.txt 只有一条记录，无法用 valid_recall/valid 挑最佳 epoch，
+        # 因此 log_stage_one.csv 只有一条记录，无法用 valid_recall/valid 挑最佳 epoch，
         # 这也是 __main__ 里 stage1 直接用 s1_epes-1(即最后一个 epoch)权重的原因。
         if ep == max_epoches-1:
             TD_mean, BD_mean, val_loss_random, val_loss_hard=validation(data_root,model, valid_dataloader, ep, log_savepath, DTI,file_root,stage)
@@ -1335,18 +1335,32 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
         # val_loss_random= np.mean(val_losses_random)
         # val_loss_hard= np.mean(val_losses_hard)
         
-        # FPR 追加在行尾：valid_recall/weight_br 等日志解析按 "指标名: 值 " 逐项正则抓取，
-        # 行尾新增字段不影响既有解析
+        # 控制台仍打印人类可读的一行汇总(与旧 txt 日志格式一致, 便于盯盘)
         print("TD: %0.4f (%0.4f), BD: %0.4f (%0.4f), DSC: %0.4f (%0.4f), Pre: %0.4f (%0.4f), Sen: %0.4f (%0.4f), Spe: %0.4f (%0.4f), FPR: %0.4f (%0.4f), FNR: %0.4f (%0.4f)" % (
                TD_mean, TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,FPR_mean,FPR_std,FNR_mean,FNR_std))
-        line = "TD: %0.4f (%0.4f), BD: %0.4f (%0.4f), DSC: %0.4f (%0.4f), Pre: %0.4f (%0.4f), Sen: %0.4f (%0.4f), Spe: %0.4f (%0.4f), FPR: %0.4f (%0.4f), FNR: %0.4f (%0.4f)" % (
-               TD_mean, TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,FPR_mean,FPR_std,FNR_mean,FNR_std)
+        # ===== 验证汇总日志: CSV 落盘(替代旧"epoch行/指标行/空行"三行制 txt) =====
+        # 每个 epoch 追加一行；文件不存在时先写表头。
+        # 列顺序即 valid_recall()/valid() 的解析契约, 改动需同步两处读取端。
+        # 带 epoch 列后, 读取端返回真实 epoch 号, 不再依赖"记录在列表中的下标"
+        _need_header = not os.path.exists(log_savepath)
         with open(log_savepath, 'a') as file:
-            file.writelines(['epoch:' + str(epoch)+'\n', line+'\n', '\n'])
+            if _need_header:
+                file.writelines('epoch,TD_mean,TD_std,BD_mean,BD_std,DSC_mean,DSC_std,'
+                                'Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,'
+                                'FPR_mean,FPR_std,FNR_mean,FNR_std\n')
+            file.writelines(','.join([str(epoch),
+                                      '%0.4f' % TD_mean, '%0.4f' % TD_std,
+                                      '%0.4f' % BD_mean, '%0.4f' % BD_std,
+                                      '%0.4f' % DSC_mean, '%0.4f' % DSC_std,
+                                      '%0.4f' % Pre_mean, '%0.4f' % Pre_std,
+                                      '%0.4f' % Sen_mean, '%0.4f' % Sen_std,
+                                      '%0.4f' % Spe_mean, '%0.4f' % Spe_std,
+                                      '%0.4f' % FPR_mean, '%0.4f' % FPR_std,
+                                      '%0.4f' % FNR_mean, '%0.4f' % FNR_std]) + '\n')
         # 逐病例指标落盘: 写到与日志同名不同后缀的 CSV(如 ./LOG/log_stage_two_val_case_metrics.csv)，
         # 后缀带 val 以明确这是验证集口径, 与测试集的 test_case_metrics.csv 区分开;
         # 三个阶段(train/train2/train3)与 DTI 复验(dtival)都走本函数, 只是传入的
-        # log_savepath 不同(如 log_stage_two_dti.txt → log_stage_two_dti_val_case_metrics.csv),
+        # log_savepath 不同(如 log_stage_two_dti.csv → log_stage_two_dti_val_case_metrics.csv),
         # 后缀统一在这里生效;
         # 追加模式、每个 epoch 每病例一行，文件不存在时先写表头；不影响既有日志解析与评分逻辑
         case_csv_path = os.path.splitext(log_savepath)[0] + '_val_case_metrics.csv'
@@ -1423,79 +1437,42 @@ def evaluation_case(pred, label, name,file_root):
 
 def valid_recall(log_path):
     """
-    从文本日志里挑“最佳 epoch”，供 stage2 选权重做 stage3 热启动。
+    从验证汇总 CSV 里挑“最佳 epoch”，供 stage2 选权重做 stage3 热启动。
 
     打分公式(偏召回)：SCORE = (TD+BD)*0.15 + (DSC+Pre)*0.2 + Sen*0.3
     隐患：DSC+Pre 合计只占 40% 权重，当模型严重过预测(DSC 只有 3~5)时，
     TD/BD/Sen 仍能刷到 99，导致该公式会选出“最会糊”的 epoch 而非“最准”的 epoch。
 
-    日志格式约定：每 3 行一条记录(epoch行 / 指标行 / 空行)，故用 l%3==1 取指标行。
-    【重要坑】返回的是“记录在列表中的下标”而非日志里写的真实 epoch 号，
-    只要日志被多追加一条记录，下标就会与权重文件名错位。
+    返回日志里记录的【真实 epoch 号】(CSV 的 epoch 列)；
+    旧 txt 时代“返回列表下标可能与权重文件名错位”的坑已随格式切换一并废弃。
     """
-
-    with open(log_path, 'r') as file:
-        lines = file.readlines()
-    m_lines = []
-    for l in range(len(lines)):
-        if l % 3 == 1:
-            m_lines.append(lines[l])
-    TD = []
-    BD = []
-    DSC = []
-    Pre = []
-    Sen = []
-    Spe = []
-    SCORE = []
-    for l in m_lines:
-        TD.append(float(re.findall(r'TD: (.*?) ', l)[0]))
-        BD.append(float(re.findall(r'BD: (.*?) ', l)[0]))
-        DSC.append(float(re.findall(r'DSC: (.*?) ', l)[0]))
-        Pre.append(float(re.findall(r'Pre: (.*?) ', l)[0]))
-        Sen.append(float(re.findall(r'Sen: (.*?) ', l)[0]))
-        Spe.append(float(re.findall(r'Spe: (.*?) ', l)[0]))
-    for l in range(len(TD)):
-        SCORE.append(TD[l]*0.15 + BD[l]*0.15 + DSC[l]*0.2 + Pre[l]*0.2 + Sen[l]*0.3)#原作者代码权重
-        # SCORE.append(TD[l]*0.3 + BD[l]*0.3 + DSC[l]*0.1 + Pre[l]*0.1 + Sen[l]*0.1 + Spe[l]*0.1)
-
-
-    print('第', SCORE.index(max(SCORE)), '个epoch验证效果最佳，分数为', max(SCORE))
-    return SCORE.index(max(SCORE))
+    records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py
+    SCORE = [r['TD']*0.15 + r['BD']*0.15 + r['DSC']*0.2 + r['Pre']*0.2 + r['Sen']*0.3   # 原作者代码权重
+             for r in records]
+        # 备选公式: TD*0.3 + BD*0.3 + DSC*0.1 + Pre*0.1 + Sen*0.1 + Spe*0.1
+    best = SCORE.index(max(SCORE))
+    print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
+    return records[best]['epoch']
 
 def valid(log_path):
     """
-    另一套选模型公式（test.py 用这个口径）：SCORE = (TD+BD+DSC+Pre)/4
+    另一套选模型公式(偏准确)：SCORE = TD*0.3 + BD*0.3 + DSC*0.2 + Pre*0.2
 
-    与 valid_recall 的区别：把 DSC 与 Pre 的合计权重从 40% 提到 50%、去掉 Sen，
+    与 valid_recall 的区别：TD+BD 合计权重从 30% 提到 60%、完全去掉 Sen，
     因此更偏向“分割准确”而非“召回”，选出的 epoch 可能与 valid_recall 不同。
     两套公式并存时务必注意：同一份日志会得出不同的 best_epoch。
+    (注：旧 docstring 写的 "(TD+BD+DSC+Pre)/4" 与代码实际公式不符，已按代码修正；
+     test.py 的 valid() 才是四项等权口径，两边公式本就不同。)
+
+    返回日志里记录的【真实 epoch 号】，理由同 valid_recall。
     """
-    with open(log_path, 'r') as file:
-        lines=file.readlines()
-    m_lines=[]
-    for l in range(len(lines)):
-        if l%3==1:
-            m_lines.append(lines[l])
-    TD=[]
-    BD=[]
-    DSC=[]
-    Pre=[]
-    Sen=[]
-    Spe=[]
-    SCORE=[]
-    for l in m_lines:
-        TD.append(float(re.findall(r'TD: (.*?) ', l)[0]))
-        BD.append(float(re.findall(r'BD: (.*?) ', l)[0]))
-        DSC.append(float(re.findall(r'DSC: (.*?) ', l)[0]))
-        Pre.append(float(re.findall(r'Pre: (.*?) ', l)[0]))
-        Sen.append(float(re.findall(r'Sen: (.*?) ', l)[0]))
-        Spe.append(float(re.findall(r'Spe: (.*?) ', l)[0]))
-    for l in range(len(TD)):
-        SCORE.append(TD[l]*0.3+BD[l]*0.3+DSC[l]*0.2+Pre[l]*0.2)#原作者代码
-        # SCORE.append(TD[l]*0.3 + BD[l]*0.3 + DSC[l]*0.1 + Pre[l]*0.1 + Sen[l]*0.1 + Spe[l]*0.1)
-    
-    print('第',SCORE.index(max(SCORE)),'个epoch验证效果最佳，分数为',max(SCORE))
-    return SCORE.index(max(SCORE))
+    records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py
+    SCORE = [r['TD']*0.3 + r['BD']*0.3 + r['DSC']*0.2 + r['Pre']*0.2   # 原作者代码
+             for r in records]
+        # 备选公式: TD*0.3 + BD*0.3 + DSC*0.1 + Pre*0.1 + Sen*0.1 + Spe*0.1
+    best = SCORE.index(max(SCORE))
+    print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
+    return records[best]['epoch']
 
 def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dtiep, gpu='0', stage=0):
     """
@@ -1504,18 +1481,18 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
     为什么需要它：训练日志里的指标是 DTI=0(固定 0.5 阈值)口径，
     而实际部署常用 DTI=1 后处理，两者指标差异很大，需要分开记录、互不污染。
 
-    :param dti_log_savepath: 独立日志路径(如 log_stage_three_dti.txt)，绝不能传主日志
+    :param dti_log_savepath: 独立日志路径(如 log_stage_three_dti.csv)，绝不能传主日志
     :param dtiep           : 要复验的 epoch 号(即权重文件名里的数字)
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
     # 复验结果单独落盘, 绝不写回主日志。
-    # 原因: 主日志会被 valid()/valid_recall() 逐条读取, 且它们返回的是"记录在列表中的下标"而非日志里真实的 epoch 号;
-    # 只要往主日志追加一条记录, 记录条数就会超过权重文件个数(如 51 条 vs 0~49 共 50 个),
-    # 下标与真实 epoch 错位, 最终拼出从未训练过的 SE_UNet_50.pth 并抛出 FileNotFoundError。
+    # 原因: 主日志 CSV 会被 valid()/valid_recall() 逐行读取参与选优;
+    # 往主日志追加一条 DTI 复验记录, 会让同一 epoch 出现两条不同口径(DTI=0/DTI=1)的行,
+    # 污染 DTI=0 口径的 best_epoch 选择。
     # log_dir = os.path.dirname(log_savepath)                      # 取主日志所在目录(如 ./LOG)
-    # log_name, log_ext = os.path.splitext(os.path.basename(log_savepath))  # 拆出 'log_stage_three' 与 '.txt'
-    # dti_log_savepath = os.path.join(log_dir, log_name + '_dti' + log_ext)  # 拼出独立文件: log_stage_three_dti.txt
+    # log_name, log_ext = os.path.splitext(os.path.basename(log_savepath))  # 拆出 'log_stage_three' 与 '.csv'
+    # dti_log_savepath = os.path.join(log_dir, log_name + '_dti' + log_ext)  # 拼出独立文件: log_stage_three_dti.csv
     # if log_dir:
     # #     os.makedirs(log_dir, exist_ok=True)                      # 目录不存在则创建, 避免写入时报错
     # open(dti_log_savepath, 'w').close()                          # 覆盖式清空, 保证"一次复验只留一条记录", 可反复重跑
@@ -1611,7 +1588,7 @@ if __name__ == '__main__':
     file_path = './data/base_dict.json'
     file_root = './data'
     model_savepath = './saved_model/stage_one'
-    log_savepath = './LOG/log_stage_one.txt'
+    log_savepath = './LOG/log_stage_one.csv'
     aug = 1 
     DTI = 1 
     s1_epes=train(data_root, model_savepath, log_savepath, aug, DTI, file_path,file_root, gpu)
@@ -1627,7 +1604,7 @@ if __name__ == '__main__':
     data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
     model_savepath = './saved_model/stage_two'
     online_savepath = './data/online_hardmining_stage_two'
-    log_savepath = './LOG/log_stage_two.txt'
+    log_savepath = './LOG/log_stage_two.csv'
     aug = 1  
     DTI = 0
     train2(data_root, model_savepath, online_savepath, log_savepath,pred1_path, aug, DTI, start_model, start_epoch, file_path, file_root, gpu)
@@ -1649,7 +1626,7 @@ if __name__ == '__main__':
 
     model_savepath = './saved_model/stage_three'
     online_savepath = './data/online_hardmining_stage_three'
-    log_savepath = './LOG/log_stage_three.txt'
+    log_savepath = './LOG/log_stage_three.csv'
     aug = 1
     DTI = 0
     train3(data_root,model_savepath, online_savepath, log_savepath,pred2_path,br_skel_path,BR_weight_path,aug, DTI, 
@@ -1657,9 +1634,9 @@ if __name__ == '__main__':
     
     ###### DTI 复验：分别用 DTI=1 口径重新评估 stage2 与 stage3 的最佳 epoch
     # 注意两行用了不同的选模型公式：stage2 用 valid_recall(偏召回)，stage3 用 valid(偏准确)
-    best_epoch = valid_recall( './LOG/log_stage_two.txt')
-    dtival( './saved_model/stage_two', './LOG/log_stage_two_dti.txt',data_root,file_path,file_root,best_epoch,gpu,stage=2)
+    best_epoch = valid_recall( './LOG/log_stage_two.csv')
+    dtival( './saved_model/stage_two', './LOG/log_stage_two_dti.csv',data_root,file_path,file_root,best_epoch,gpu,stage=2)
 
-    best_epoch = valid( './LOG/log_stage_three.txt')
-    dtival('./saved_model/stage_three', './LOG/log_stage_three_dti.txt',data_root,file_path,file_root,best_epoch,gpu,stage=3)
+    best_epoch = valid( './LOG/log_stage_three.csv')
+    dtival('./saved_model/stage_three', './LOG/log_stage_three_dti.csv',data_root,file_path,file_root,best_epoch,gpu,stage=3)
 

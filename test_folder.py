@@ -386,10 +386,9 @@ def main():
         for r in rows:
             f.write(','.join([epoch_tag] + [str(v) for v in r]) + '\n')
 
-    # ---- test_summary.txt: 汇总行(均值(标准差)) ----
-    # 格式对齐 LOG/test_log_stage_three.txt 第 1 行:
-    #   "TD: 93.4730 (3.2229), BD: 95.1930 (2.8063), DSC: ..., FNR: ..."
-    # 每次运行追加一行，方便多组权重/多批数据横向对比(与参考文件行为一致)
+    # ---- test_summary.csv: 汇总(均值/标准差各一列) ----
+    # 表头与 train.py validation() 的 CSV 契约同构: epoch + 每指标 mean/std 两列，
+    # 每次运行追加一行，方便多组权重/多批数据横向对比(与旧 test_summary.txt 行为一致)
     parts = []
     for k in file_names:
         vals = []
@@ -404,9 +403,26 @@ def main():
             parts.append('%s: %0.4f (%0.4f)' % (k, np.mean(vals), np.std(vals)))
     line = ', '.join(parts)
     print('\n===== 汇总(均值(标准差)) =====\n' + line)
-    summary_path = os.path.join(args.output_dir, 'test_summary.txt')
+    summary_path = os.path.join(args.output_dir, 'test_summary.csv')
+    _need_header = not os.path.exists(summary_path)
     with open(summary_path, 'a') as f:
-        f.write(line + '\n')
+        if _need_header:
+            # 表头: epoch + 各指标 mean/std 成对列(列名与 file_names 顺序一致)
+            f.write('epoch,' + ','.join(
+                sum([['%s_mean' % k, '%s_std' % k] for k in file_names], [])) + '\n')
+        # 数据行: 按指标顺序拼 mean/std; 某指标全例失败时补 NA, 保证列数与表头对齐
+        cells = [epoch_tag]
+        for k in file_names:
+            vals = []
+            for r in rows:
+                try:
+                    v = float(r[1 + file_names.index(k)])
+                    if not np.isnan(v):
+                        vals.append(v)
+                except (ValueError, TypeError):
+                    pass
+            cells += ['%0.4f' % np.mean(vals), '%0.4f' % np.std(vals)] if vals else ['NA', 'NA']
+        f.write(','.join(cells) + '\n')
     print('完成。汇总行:', summary_path, ' 逐例明细:', detail_path, ' 预测掩码:', pred_dir)
 
 
