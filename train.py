@@ -283,7 +283,9 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
     # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
     # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
-    tb_dir = os.path.dirname(log_savepath) or '.'
+    # 取 log_savepath(日志文件完整路径)所在目录作为 TensorBoard 日志根目录；
+    # 若用户只传了裸文件名(不含目录部分)，dirname 会返回空字符串，此时回退为当前目录 '.'
+    tb_dir = os.path.dirname(log_savepath) if os.path.dirname(log_savepath) != '' else '.'
     os.makedirs(tb_dir, exist_ok=True)
     log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
@@ -663,7 +665,9 @@ def train2(data_root,
     # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
     # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
     # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
-    tb_dir = os.path.dirname(log_savepath) or '.'
+    # 取 log_savepath(日志文件完整路径)所在目录作为 TensorBoard 日志根目录；
+    # 若用户只传了裸文件名(不含目录部分)，dirname 会返回空字符串，此时回退为当前目录 '.'
+    tb_dir = os.path.dirname(log_savepath) if os.path.dirname(log_savepath) != '' else '.'
     os.makedirs(tb_dir, exist_ok=True)
     log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
@@ -992,7 +996,9 @@ def train(data_root,model_savepath,
     # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
     # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
     # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
-    tb_dir = os.path.dirname(log_savepath) or '.'
+    # 取 log_savepath(日志文件完整路径)所在目录作为 TensorBoard 日志根目录；
+    # 若用户只传了裸文件名(不含目录部分)，dirname 会返回空字符串，此时回退为当前目录 '.'
+    tb_dir = os.path.dirname(log_savepath) if os.path.dirname(log_savepath) != '' else '.'
     os.makedirs(tb_dir, exist_ok=True)
     log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
