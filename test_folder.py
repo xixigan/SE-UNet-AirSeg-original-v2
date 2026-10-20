@@ -34,6 +34,8 @@ SE-UNet 气道分割：原始文件夹(ZYX 未转换)端到端测试评估脚本
   python test_folder.py --input_dir F:/raw_dataset --log ./LOG/log_stage_three.txt --model_dir ./saved_model/stage_three
   # D. 常用可选项
   python test_folder.py --input_dir ... --weights ... --gpu 1 --DTI 0 --save_gt --output_dir ./test_result/my_test
+  # E. 指定总根目录(与 train.py/test.py 一致)：结果/日志/权重都从该目录派生
+  python test_folder.py --input_dir F:/raw_dataset --root_dir F:/runs/exp1
 """
 import argparse
 import os
@@ -297,9 +299,14 @@ def main():
     parser.add_argument('--mask_dir', default=None, help='mask 文件夹(与 --data_dir 搭配使用)')
     parser.add_argument('--weights', default=None,
                         help='权重 .pth；不给时须同时提供 --log 与 --model_dir，由 valid() 自动挑最佳 epoch')
+    parser.add_argument('--root_dir', default=None,
+                        help='总输出根目录(与 train.py/test.py 一致)：指定后 --output_dir/--log/--model_dir 未显式给出时，'
+                             '默认取 <root_dir>/test_result/folder_test、<root_dir>/LOG/log_stage_three.csv、'
+                             '<root_dir>/saved_model/stage_three')
     parser.add_argument('--log', default=None, help='训练日志，如 ./LOG/log_stage_three.txt')
     parser.add_argument('--model_dir', default=None, help='权重目录，如 ./saved_model/stage_three')
-    parser.add_argument('--output_dir', default='./test_result/folder_test', help='结果输出目录')
+    parser.add_argument('--output_dir', default=None,
+                        help='结果输出目录(默认 ./test_result/folder_test；指定 --root_dir 时默认 <root_dir>/test_result/folder_test)')
     parser.add_argument('--gpu', default='0', help='CUDA_VISIBLE_DEVICES，如 "0"')
     parser.add_argument('--DTI', type=int, default=1, help='1=双阈值(0.5/0.35)受约束生长；0=固定阈值 0.5')
     parser.add_argument('--cube_size', type=int, default=128, help='滑窗块边长(须与训练一致)')
@@ -309,6 +316,19 @@ def main():
     parser.add_argument('--save_gt', action='store_true', help='同时保存裁剪后的金标准 mask 便于目检')
     parser.set_defaults(edge_crop=True)
     args = parser.parse_args()
+
+    # 指定 --root_dir 时，未显式给出的输出/日志/权重路径统一从根目录派生(对齐 train.py/test.py 的目录结构)
+    if args.root_dir:
+        root = os.path.abspath(args.root_dir)
+        if args.output_dir is None:
+            args.output_dir = os.path.join(root, 'test_result', 'folder_test')
+        if args.weights is None:   # 只有需要自动选 epoch 时才派生日志与权重目录
+            if args.log is None:
+                args.log = os.path.join(root, 'LOG', 'log_stage_three.csv')
+            if args.model_dir is None:
+                args.model_dir = os.path.join(root, 'saved_model', 'stage_three')
+    if args.output_dir is None:
+        args.output_dir = './test_result/folder_test'   # 未给 --root_dir 时维持原默认
 
     if not args.input_dir and not (args.data_dir and args.mask_dir):
         parser.error('必须提供 --input_dir，或同时提供 --data_dir 与 --mask_dir')
@@ -332,7 +352,7 @@ def main():
     # ---- 模型只加载一次，逐病例复用 ----
     model = SE_UNet(in_channel=2, n_classes=1)
     weights_dict = torch.load(args.weights)
-    model.load_state_dict(weights_dict, strict=False)   # 容忍 DataParallel 的 module. 前缀差异
+    model.load_state_dict(weights_dict, strict=True)   # 严格加载: 权重由 model.module.state_dict() 保存, 无前缀, 键须完全一致
     model = torch.nn.DataParallel(model).cuda()
     model.eval()   # 必须 eval：否则 DropLayer 随机丢 30% 通道，滑窗平均不可复现
 

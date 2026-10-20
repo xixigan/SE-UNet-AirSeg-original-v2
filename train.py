@@ -11,6 +11,7 @@ online_savepath 磁盘缓存，然后用第二个 dataloader 把这些难例再�
 """
 import numpy as np
 import os
+import argparse   # 命令行参数：--root_dir 指定总输出根目录
 import torch
 import re
 import time
@@ -255,7 +256,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     """
     stage=3                 # 标记当前阶段, 传给 validation() 决定是否计算 hard 指标
     max_epoches = 50         # 总 epoch 数
-    batch_size_per_case =2   # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
+    batch_size_per_case = 2   # 【注意】这是传给 Dataset 的“每个病例内部采几个 patch”，
                              # 不是 DataLoader 的 batch_size！见下方 transpose(0,1) 说明
     aug_flag = aug
 
@@ -264,7 +265,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     dataloader_batch_size = 1        # 训练 DataLoader 的 batch(必须保持 1，真实 batch 由 batch_size_per_case 决定)
     num_workers = 0                  # DataLoader 子进程数，0=主进程读
     learning_rate = 0.0001           # AdamW 初始学习率
-    lr_milestones = [40, 60]         # MultiStepLR 衰减点
+    lr_milestones = [10, 20, 40]     # MultiStepLR 衰减点(每 epoch 只 step 一次, 计数即真实 epoch 号)
     lr_gamma = 0.1                   # 衰减系数
     hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
     hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
@@ -279,9 +280,14 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
 
     # TensorBoard 日志目录：用“阶段名 + 月_日_时_分”保证每次启动是独立 run，不会混曲线
     current_date = datetime.datetime.now()
-    log_root = './LOG/'+model_savepath.split('./saved_model/')[-1]+'_{}_{}_{}_{}'.format(current_date.month, current_date.day,
+    # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
+    # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
+    # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
+    tb_dir = os.path.dirname(log_savepath) or '.'
+    os.makedirs(tb_dir, exist_ok=True)
+    log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
-                                                                      current_date.minute)
+                                                                      current_date.minute))
     writer = SummaryWriter(str(log_root))
 
     # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
@@ -339,7 +345,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)   # AdamW: 权重衰减与梯度解耦，比 Adam 正则更干净
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                         milestones=lr_milestones,
-                                                        gamma=lr_gamma)  # 到达 milestones 时把学习率乘 gamma（当前每 epoch step 两次，实际约第 20 epoch 就衰减）
+                                                        gamma=lr_gamma)  # 到达 milestones 时把学习率乘 gamma（每 epoch 只 step 一次，衰减点即真实 epoch 号）
 
     # 【超参数落盘】把本阶段训练+验证用到的全部超参数写成 JSON，存进权重目录，便于复现与追溯
     save_hyperparams(model_savepath, 'hyperparams_stage_three.json', {
@@ -419,7 +425,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     # 从【上一阶段】的权重热启动：stage3 用 stage2 选出的最佳 epoch 权重
     weights_dict = torch.load(start_model +
                               'SE_UNet_{}.pth'.format(start_epoch))
-    model.load_state_dict(weights_dict, strict=False)   # strict=False: 容忍少量键不匹配(如 SE 分支新增参数)
+    model.load_state_dict(weights_dict, strict=True)   # 严格加载: 键不匹配立即报错, 避免静默漏加载
     model = torch.nn.DataParallel(model).cuda()          # 包装成多卡并行；注意存权重时要用 model.module 去掉前缀
     model.train()
     starttime = time.time()
@@ -531,7 +537,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         torch.cuda.empty_cache()   # 归还本 epoch 缓存的显存碎片
 
         # writer.close() 原先写在这里(epoch 循环内)，导致每个 epoch 重建事件文件；已挪到函数末尾统一关闭
-        lr_scheduler.step()             # 学习率衰减(第 1 次 step)
+        lr_scheduler.step()             # 学习率衰减：本 epoch 唯一一次 step(难例遍后的第 2 次 step 已移除, MultiStepLR 计数=真实 epoch)
         # '''
         # ============ 第二遍：把本 epoch 攒下的难例读回来再训一遍 ============
         # print('start online hard mining: ')
@@ -580,7 +586,6 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
 
 
 
-        lr_scheduler.step()   # 学习率衰减(第 2 次 step)：与上面那次叠加，实际衰减速率是名义的 2 倍
         # '''
         print('')
         # 本 epoch 结束后在验证集上滑窗推理并计算全套指标(TD/BD/DSC/Pre/Sen/Spe)
@@ -600,7 +605,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         torch.cuda.empty_cache()
         os.makedirs(model_savepath, exist_ok=True)   # 递归建目录，nibabel/torch 不会自动创建父目录
         # 只存权重(state_dict)。用 model.module 是为了去掉 DataParallel 加的 "module." 前缀，
-        # 使保存的键与裸 SE_UNet 一致，后续 strict=False 加载才不会错位。
+        # 使保存的键与裸 SE_UNet 一致，后续严格加载(strict=True)才不会因前缀错位报错。
         # 【不含 optimizer/scheduler】，因此目前无法真正断点续训。
         torch.save(
             model.module.state_dict(),
@@ -634,7 +639,7 @@ def train2(data_root,
     """
     stage=2
     max_epoches = 50
-    batch_size_per_case =2   # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
+    batch_size_per_case = 2   # 同样是“Dataset 内部每病例采几个 patch”，非 DataLoader batch
     aug_flag = aug
 
     # ===== 训练超参数集中定义(便于统一调参与复现) =====
@@ -642,7 +647,7 @@ def train2(data_root,
     dataloader_batch_size = 1        # 训练 DataLoader 的 batch(必须保持 1，真实 batch 由 batch_size_per_case 决定)
     num_workers = 0                  # DataLoader 子进程数，0=主进程读
     learning_rate = 0.0001           # AdamW 初始学习率
-    lr_milestones = [40, 60]         # MultiStepLR 衰减点
+    lr_milestones = [10, 20, 40]     # MultiStepLR 衰减点(每 epoch 只 step 一次, 计数即真实 epoch 号)
     lr_gamma = 0.1                   # 衰减系数
     hm_limits_ratio = 0.3            # 难例缓存上限比例 = 病例数 x batch x 0.3
     hm_rate = 1.0                    # 第二遍 OnlineHMData 采样比例(1.0 = 全部读回)
@@ -655,9 +660,14 @@ def train2(data_root,
 
 
     current_date = datetime.datetime.now()   # TensorBoard run 目录(含时间戳，每次启动独立)
-    log_root = './LOG/'+model_savepath.split('./saved_model/')[-1]+'_{}_{}_{}_{}'.format(current_date.month, current_date.day,
+    # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
+    # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
+    # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
+    tb_dir = os.path.dirname(log_savepath) or '.'
+    os.makedirs(tb_dir, exist_ok=True)
+    log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
-                                                                      current_date.minute)
+                                                                      current_date.minute))
     writer = SummaryWriter(str(log_root))
 
     # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
@@ -783,7 +793,7 @@ def train2(data_root,
     # weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_63.pth'))
     weights_dict = torch.load(start_model +
                               'SE_UNet_{}.pth'.format(start_epoch))
-    model.load_state_dict(weights_dict, strict=False)
+    model.load_state_dict(weights_dict, strict=True)
     model = torch.nn.DataParallel(model).cuda()
     model.train()
     starttime = time.time()
@@ -875,7 +885,7 @@ def train2(data_root,
 
         # writer.close() 原先写在这里(epoch 循环内)，导致每个 epoch 重建事件文件；已挪到函数末尾统一关闭
 
-        lr_scheduler.step()        # 学习率衰减(第 1 次 step)
+        lr_scheduler.step()        # 学习率衰减：本 epoch 唯一一次 step(难例遍后的第 2 次 step 已移除, MultiStepLR 计数=真实 epoch)
 
         # '''
         # ============ 第二遍：把本 epoch 攒下的难例读回来再训一遍 ============
@@ -921,7 +931,6 @@ def train2(data_root,
             loss.backward()         # 第 2 次 backward：难例遍的独立参数更新
             optimizer.step()
 
-        lr_scheduler.step()   # 学习率衰减(第 2 次 step)：与上面那次叠加，实际衰减速率是名义的 2 倍
 
         print('')
         # stage2 每个 epoch 都验证（与 stage1 只在最后一个 epoch 验证不同）
@@ -962,7 +971,7 @@ def train(data_root,model_savepath,
     """
     stage=1
     max_epoches = 100
-    batch_size_per_case =2
+    batch_size_per_case = 2
     aug_flag = aug
 
     # ===== 训练超参数集中定义(便于统一调参与复现) =====
@@ -980,9 +989,14 @@ def train(data_root,model_savepath,
 
 
     current_date = datetime.datetime.now()
-    log_root = './LOG/'+model_savepath.split('./saved_model/')[-1]+'_{}_{}_{}_{}'.format(current_date.month, current_date.day,
+    # TensorBoard run 目录不再硬编码 './LOG/' + split('./saved_model/')，
+    # 而是从 log_savepath 所在目录(即 root_dir/LOG)和 model_savepath 末级目录名(stage_x)派生，
+    # 这样无论用户指定什么总输出根目录，TensorBoard 日志都会落在该根目录的 LOG 子目录下
+    tb_dir = os.path.dirname(log_savepath) or '.'
+    os.makedirs(tb_dir, exist_ok=True)
+    log_root = os.path.join(tb_dir, os.path.basename(os.path.normpath(model_savepath)) + '_{}_{}_{}_{}'.format(current_date.month, current_date.day,
                                                                       current_date.hour,
-                                                                      current_date.minute)
+                                                                      current_date.minute))
     writer = SummaryWriter(str(log_root))
 
     # 训练 loss 逐迭代落 CSV(与 TensorBoard 同源记录)：无 TensorBoard 环境时
@@ -1093,7 +1107,7 @@ def train(data_root,model_savepath,
 
     # resume
     # weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_27.pth'))
-    # model.load_state_dict(weights_dict, strict=False)
+    # model.load_state_dict(weights_dict, strict=True)
     # stage1 是从零训练(无 start_model)，故此处不加载任何权重；被注释的两行是手动续训入口
     model = torch.nn.DataParallel(model).cuda()
     model.train()
@@ -1447,8 +1461,8 @@ def valid_recall(log_path):
     旧 txt 时代“返回列表下标可能与权重文件名错位”的坑已随格式切换一并废弃。
     """
     records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py
-    SCORE = [r['TD']*0.15 + r['BD']*0.15 + r['DSC']*0.2 + r['Pre']*0.2 + r['Sen']*0.3   # 原作者代码权重
-             for r in records]
+    # SCORE = [r['TD']*0.15 + r['BD']*0.15 + r['DSC']*0.2 + r['Pre']*0.2 + r['Sen']*0.3 for r in records]   # 原作者代码权重        
+    SCORE = [r['TD']*0.3 + r['BD']*0.3 + r['DSC']*0.2 + r['Pre']*0.2 for r in records]#保持和第三阶段的公式一致
         # 备选公式: TD*0.3 + BD*0.3 + DSC*0.1 + Pre*0.1 + Sen*0.1 + Spe*0.1
     best = SCORE.index(max(SCORE))
     print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
@@ -1467,8 +1481,7 @@ def valid(log_path):
     返回日志里记录的【真实 epoch 号】，理由同 valid_recall。
     """
     records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py
-    SCORE = [r['TD']*0.3 + r['BD']*0.3 + r['DSC']*0.2 + r['Pre']*0.2   # 原作者代码
-             for r in records]
+    SCORE = [r['TD']*0.3 + r['BD']*0.3 + r['DSC']*0.2 + r['Pre']*0.2 for r in records]#原作者代码权重
         # 备选公式: TD*0.3 + BD*0.3 + DSC*0.1 + Pre*0.1 + Sen*0.1 + Spe*0.1
     best = SCORE.index(max(SCORE))
     print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
@@ -1519,7 +1532,7 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
 
     # dtival 是纯推理复验函数(只调用 validation, 不做反向传播), 因此模型应处于 eval()
     weights_dict = torch.load(os.path.join(model_savepath ,'SE_UNet_{}.pth'.format(dtiep)))
-    model.load_state_dict(weights_dict, strict=False)
+    model.load_state_dict(weights_dict, strict=True)
     model = torch.nn.DataParallel(model).cuda()
     model.eval()
 
@@ -1581,52 +1594,74 @@ if __name__ == '__main__':
     # gpu = ','.join(
     #     [str(x) for x in list(np.where(free > lm_per_gpu)[0][0:gpu_need_num])])
     
-    gpu = '0'
+    # ===== 命令行参数：用 --root_dir 指定一个"总输出根目录" =====
+    # 训练/验证产生的全部工件都会落在该目录下，多个实验可各自独立归档：
+    #   <root_dir>/saved_model/stage_{one,two,three}  各阶段权重(含复验 JSON)
+    #   <root_dir>/LOG/                               训练 CSV 日志、逐迭代 loss、TensorBoard run、DTI 复验日志
+    #   <root_dir>/data/                              流水线中间产物(pred_1/pred_2/BR_weight/br_skel/online_hardmining)
+    # 输入侧(--data_root 预处理数据、--file_root 只读工件 base_dict.json/skeleton/tree_parse/LIB_weight)不受 --root_dir 影响
+    parser = argparse.ArgumentParser(description='SE-UNet 三阶段级联训练')
+    parser.add_argument('--root_dir', default='./run/',
+                        help='总输出根目录：权重/日志/中间产物全部生成在该目录下(默认当前目录)')
+    parser.add_argument('--data_root', default=r'F:\datasets\ATM22\TrainBatch1\after_yxz',
+                        help='预处理后数据根目录(含 data/ 与 mask/ 子目录)')
+    parser.add_argument('--file_root', default='./data',
+                        help='只读工件根目录：base_dict.json、skeleton、tree_parse、LIB_weight 等')
+    parser.add_argument('--gpu', default='0', help='CUDA_VISIBLE_DEVICES 的 GPU 编号，如 "0" 或 "0,1"')
+    args = parser.parse_args()
+
+    root = os.path.abspath(args.root_dir)                 # 统一转绝对路径，避免相对路径拼接歧义
+    model_root = os.path.join(root, 'saved_model')       # 权重根目录
+    log_dir = os.path.join(root, 'LOG')                  # 日志根目录(CSV + TensorBoard)
+    mid_root = os.path.join(root, 'data')                # 流水线中间产物根目录
+    for d in (model_root, log_dir, mid_root):
+        os.makedirs(d, exist_ok=True)                    # 提前建好目录，后续写日志/权重不会因目录缺失报错
+
+    gpu = args.gpu
+    data_root = args.data_root
+    file_root = args.file_root
+    file_path = os.path.join(file_root, 'base_dict.json')   # 病例划分 json(输入，位于 file_root 下)
 
     #######################################TRAIN_STAGE_1##############################################################
-    data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
-    file_path = './data/base_dict.json'
-    file_root = './data'
-    model_savepath = './saved_model/stage_one'
-    log_savepath = './LOG/log_stage_one.csv'
+    model_savepath = os.path.join(model_root, 'stage_one')
+    log_savepath = os.path.join(log_dir, 'log_stage_one.csv')
     aug = 1 
     DTI = 1 
     s1_epes=train(data_root, model_savepath, log_savepath, aug, DTI, file_path,file_root, gpu)
 
     ######################################STAGE_1_PRED#################################################
-    pred1_path = './data/pred_1'
+    pred1_path = os.path.join(mid_root, 'pred_1')
     save_gradients_tw(data_root,stage_load=model_savepath,file_root=file_root,savepath=pred1_path,file_path=file_path,layer=0,gpu=gpu,s1_epes=s1_epes)
 
     #######################################TRAIN_STAGE_2################################################################
-    start_model = './saved_model/stage_one/'
+    # start_model 末尾必须带分隔符：train2 内部用 start_model + 'SE_UNet_x.pth' 字符串拼接
+    start_model = os.path.join(model_root, 'stage_one') + os.sep
     start_epoch = s1_epes-1
 
-    data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
-    model_savepath = './saved_model/stage_two'
-    online_savepath = './data/online_hardmining_stage_two'
-    log_savepath = './LOG/log_stage_two.csv'
+    model_savepath = os.path.join(model_root, 'stage_two')
+    online_savepath = os.path.join(mid_root, 'online_hardmining_stage_two')
+    log_savepath = os.path.join(log_dir, 'log_stage_two.csv')
     aug = 1  
     DTI = 0
     train2(data_root, model_savepath, online_savepath, log_savepath,pred1_path, aug, DTI, start_model, start_epoch, file_path, file_root, gpu)
 
     #######################################STAGE_2_PRED/BR-wi/br_skel#####################################################
     epoch = valid_recall(log_savepath)
-    whichepoch = './saved_model/stage_two/SE_UNet_{}.pth'.format(epoch)
-    pred2_path = './data/pred_2'
+    whichepoch = os.path.join(model_root, 'stage_two', 'SE_UNet_{}.pth'.format(epoch))
+    pred2_path = os.path.join(mid_root, 'pred_2')
     save_s2_pred(data_root, whichepoch, pred2_path, file_path,gpu)
 
-    BR_weight_path = './data/BR_weight'
-    br_skel_path = './data/br_skel'
+    BR_weight_path = os.path.join(mid_root, 'BR_weight')
+    br_skel_path = os.path.join(mid_root, 'br_skel')
     save_weight_break(data_root, pred2_path, BR_weight_path, br_skel_path,file_path)
 
     ########################################TRAIN_STAGE_3################################################################
-    data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
-    start_model = './saved_model/stage_two/'
+    start_model = os.path.join(model_root, 'stage_two') + os.sep
     start_epoch = epoch
 
-    model_savepath = './saved_model/stage_three'
-    online_savepath = './data/online_hardmining_stage_three'
-    log_savepath = './LOG/log_stage_three.csv'
+    model_savepath = os.path.join(model_root, 'stage_three')
+    online_savepath = os.path.join(mid_root, 'online_hardmining_stage_three')
+    log_savepath = os.path.join(log_dir, 'log_stage_three.csv')
     aug = 1
     DTI = 0
     train3(data_root,model_savepath, online_savepath, log_savepath,pred2_path,br_skel_path,BR_weight_path,aug, DTI, 
@@ -1634,9 +1669,9 @@ if __name__ == '__main__':
     
     ###### DTI 复验：分别用 DTI=1 口径重新评估 stage2 与 stage3 的最佳 epoch
     # 注意两行用了不同的选模型公式：stage2 用 valid_recall(偏召回)，stage3 用 valid(偏准确)
-    best_epoch = valid_recall( './LOG/log_stage_two.csv')
-    dtival( './saved_model/stage_two', './LOG/log_stage_two_dti.csv',data_root,file_path,file_root,best_epoch,gpu,stage=2)
+    best_epoch = valid_recall( os.path.join(log_dir, 'log_stage_two.csv'))
+    dtival( os.path.join(model_root, 'stage_two'), os.path.join(log_dir, 'log_stage_two_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=2)
 
-    best_epoch = valid( './LOG/log_stage_three.csv')
-    dtival('./saved_model/stage_three', './LOG/log_stage_three_dti.csv',data_root,file_path,file_root,best_epoch,gpu,stage=3)
+    best_epoch = valid( os.path.join(log_dir, 'log_stage_three.csv'))
+    dtival(os.path.join(model_root, 'stage_three'), os.path.join(log_dir, 'log_stage_three_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=3)
 

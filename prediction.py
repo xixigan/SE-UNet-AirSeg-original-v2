@@ -93,7 +93,7 @@ def network_prediction(model_path,patient,data_path, save_path,flip=False,gpu='0
 
     model = SE_UNet(in_channel=2, n_classes=1)   # 2 通道(双窗宽)输入, 1 通道前景概率输出
     weights_dict = torch.load(model_path)
-    model.load_state_dict(weights_dict, strict=False)   # strict=False 容忍少量键不匹配
+    model.load_state_dict(weights_dict, strict=True)   # 严格加载: 键不匹配立即报错, 避免静默漏加载
     model = torch.nn.DataParallel(model).cuda()          # 包一层以统一 .module 存取习惯
     model.eval()   # 推理必须 eval(): 否则 DropLayer 会按 self.training 随机丢弃 30% 通道,
                    # 使每个 patch 拿到不同随机掩码, 滑窗平均结果不可复现

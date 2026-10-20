@@ -35,7 +35,7 @@ def save_s2_pred(data_root, whichepoch, savepath,file_path, gpu):
     case_net = SE_UNet(in_channel=2, n_classes=1)
     # 优化: map_location='cpu' 让权重先读到 CPU, 避免 torch.load 在 GPU 上直接分配一份临时权重
     weights_dict = torch.load(whichepoch, map_location='cpu')
-    case_net.load_state_dict(weights_dict, strict=False)
+    case_net.load_state_dict(weights_dict, strict=True)
     del weights_dict  # 权重已载入模型, 立即释放字典
     case_net.cuda()
     case_net.eval()  # 关键修复: 推理必须 eval(), train() 会让 BatchNorm 使用 batch 统计量并保留中间激活
@@ -268,8 +268,7 @@ def valid_recall(log_path):
     旧 txt 时代"返回列表下标可能错位"的坑已随格式切换一并废弃。
     """
     records = read_val_csv(log_path)   # 共享解析函数, 定义在 metrics.py; 全部 8 个均值已解析
-    SCORE = [(r['TD'] + r['BD']) * 0.15 + (r['DSC'] + r['Pre']) * 0.2 + r['Sen'] * 0.3
-             for r in records]
+    SCORE = [(r['TD'] + r['BD']) * 0.15 + (r['DSC'] + r['Pre']) * 0.2 + r['Sen'] * 0.3 for r in records]
     best = SCORE.index(max(SCORE))
     print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
     return records[best]['epoch']

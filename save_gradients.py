@@ -67,7 +67,7 @@ def save_gradients_tw(data_root,stage_load,file_root,savepath,file_path,layer=0,
     # 优化: map_location='cpu' 让权重先落到 CPU, 避免 torch.load 直接在 GPU 上分配一份临时权重副本
     weights_dict = torch.load(os.path.join(stage_load, 'SE_UNet_{}.pth'.format(s1_epes-1)),
                               map_location='cpu')
-    case_net.load_state_dict(weights_dict, strict=False)
+    case_net.load_state_dict(weights_dict, strict=True)
     del weights_dict  # 权重已拷贝进模型, 立即释放字典, 不再长期占内存
     # 优化: DataParallel 包装后 .cuda() 一次即可, 删除多余的 case_net.cuda() 重复调用
     case_net = torch.nn.DataParallel(case_net).cuda()

@@ -11,6 +11,7 @@ SE-UNet 气道分割：独立测试入口
 import numpy as np
 import torch
 import os
+import argparse   # 命令行参数：--root_dir 指定总输出根目录
 import re
 import cc3d
 import matplotlib.pyplot as plt
@@ -131,7 +132,7 @@ def test(data_root, model_stage, best_epoch, testlog_savepath, result_savepath,
 
     weights_dict = torch.load(model_stage +
                               '/SE_UNet_{}.pth'.format(best_epoch))
-    model.load_state_dict(weights_dict, strict=False)   # strict=False 容忍少量键不匹配
+    model.load_state_dict(weights_dict, strict=True)   # 严格加载: 键不匹配立即报错, 避免静默漏加载
     model = torch.nn.DataParallel(model).cuda()
     # 关键修复: 测试是纯推理, 必须 eval()。
     # train() 下 DropLayer 会按 self.training 随机丢弃 30% 通道,
@@ -412,6 +413,20 @@ def evaluation_case_test(pred, label, name, file_root):
     return TD,BD,DSC,Pre,Sen,Spe,FPR,FNR
 
 if __name__ == '__main__':
+    # ===== 命令行参数：--root_dir 指定总输出根目录(与 train.py 保持一致) =====
+    # 测试工件统一生成在该目录下：
+    #   <root_dir>/LOG/test_log_stage_three*.csv   逐病例测试指标日志
+    #   <root_dir>/test_result/                    预测 mha、超参 JSON、箱线图
+    #   <root_dir>/saved_model/stage_three         选 epoch 与加载权重都从该目录读取
+    parser = argparse.ArgumentParser(description='SE-UNet stage3 测试评估')
+    parser.add_argument('--root_dir', default='.',
+                        help='总输出根目录：日志/结果生成在该目录下，权重也从该目录读取(默认当前目录)')
+    parser.add_argument('--data_root', default=r'F:\datasets\ATM22\TrainBatch1\after_yxz',
+                        help='预处理后数据根目录(含 data/ 与 mask/ 子目录)')
+    parser.add_argument('--file_root', default='./data',
+                        help='只读工件根目录：test.json、skeleton、tree_parse、LIB_weight 等')
+    args = parser.parse_args()
+
     gpu_all_num = 1
     gpu_need_num = 1
     lm_per_gpu = 10000
@@ -424,15 +439,19 @@ if __name__ == '__main__':
     gpu = ','.join(
         [str(x) for x in list(np.where(free > lm_per_gpu)[0][0:gpu_need_num])])
 
-    log_path = './LOG/log_stage_three.csv'
-    best_epoch = valid(log_path)
-    model_stage = './saved_model/stage_three'
+    root = os.path.abspath(args.root_dir)
+    log_dir = os.path.join(root, 'LOG')
+    os.makedirs(log_dir, exist_ok=True)   # 测试日志目录不存在时先创建
 
-    data_root = r'F:\datasets\ATM22\TrainBatch1\after_yxz'
-    file_path = './data/test.json'
-    file_root = './data'
-    result_savepath = './test_result'
-    testlog_savepath = './LOG/test_log_stage_three.csv'
+    log_path = os.path.join(log_dir, 'log_stage_three.csv')   # 选最佳 epoch 用的训练日志
+    best_epoch = valid(log_path)
+    model_stage = os.path.join(root, 'saved_model', 'stage_three')
+
+    data_root = args.data_root
+    file_root = args.file_root
+    file_path = os.path.join(file_root, 'test.json')
+    result_savepath = os.path.join(root, 'test_result')
+    testlog_savepath = os.path.join(log_dir, 'test_log_stage_three.csv')
     DTI = 1
 
     test(data_root,model_stage, best_epoch, testlog_savepath, result_savepath, DTI,
