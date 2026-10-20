@@ -1,0 +1,85 @@
+{
+  "stage": 2,
+  "stage_说明": "训练阶段编号(2=第二阶段)",
+  "model": {
+    "arch": "SE_UNet",
+    "in_channel": 2,
+    "n_classes": 1,
+    "说明": "SE_UNet; in_channel=输入通道数(两种窗宽归一化), n_classes=输出通道数(前景概率)"
+  },
+  "train": {
+    "max_epoches": 50,
+    "max_epoches_说明": "总 epoch 数",
+    "batch_size_per_case": 3,
+    "batch_size_per_case_说明": "Dataset 内部每病例采几个 patch(真实 batch)",
+    "dataloader_batch_size": 1,
+    "dataloader_batch_size_说明": "DataLoader 的 batch, 必须保持 1, 真实 batch 由 batch_size_per_case 决定(见 AirwayHMData 注释)",
+    "num_workers": 0,
+    "num_workers_说明": "DataLoader 子进程数, 0=主进程读",
+    "cube_size": 128,
+    "cube_size_说明": "训练裁剪块边长",
+    "aug": 1,
+    "aug_说明": "1=开启随机翻转增强",
+    "optimizer": "AdamW",
+    "optimizer_说明": "优化器类型, 初始学习率见 lr",
+    "lr": 0.0001,
+    "lr_说明": "AdamW 初始学习率",
+    "scheduler": "MultiStepLR",
+    "scheduler_说明": "学习率调度器, 到达 milestones 时把学习率乘 gamma",
+    "milestones": [
+      10,
+      20,
+      40
+    ],
+    "milestones_说明": "MultiStepLR 衰减点(epoch)",
+    "gamma": 0.1,
+    "gamma_说明": "学习率衰减系数",
+    "loss": "general_union_loss_lib(加权根号Tversky, alpha=0.2, beta=0.8, en+de 两路)",
+    "loss_说明": "损失函数配置",
+    "online_hard_mining": {
+      "enabled": true,
+      "cache_dir": "./data/online_hardmining_stage_two",
+      "limits_ratio": 0.3,
+      "limits_ratio_说明": "缓存上限 = 病例数 x batch x 该比例, 只留最难的前 30%",
+      "dataloader_batch_size": 2,
+      "dataloader_batch_size_说明": "第二遍难例回放的 DataLoader 真实 batch(每个 item 是磁盘上单个难例 patch)"
+    },
+    "start_model": "./saved_model/stage_one/",
+    "start_model_说明": "热启动来源(stage1 权重目录)",
+    "start_epoch": 99,
+    "start_epoch_说明": "热启动使用的 epoch 号"
+  },
+  "validation": {
+    "DTI": 0,
+    "DTI_说明": "1=双阈值后处理, 0=固定 0.5 阈值",
+    "cube_size": 128,
+    "cube_size_说明": "验证滑窗块边长",
+    "step": 64,
+    "step_说明": "验证滑窗步长(重叠一半)",
+    "batch_size": 1,
+    "batch_size_说明": "SegValCropData 补齐基数(per_case) and DataLoader batch, 两者必须相等(共用这一个值)",
+    "fixed_threshold": 0.5,
+    "fixed_threshold_说明": "DTI=0 时使用的固定阈值",
+    "dti_h_thresh": 0.5,
+    "dti_h_thresh_说明": "DTI=1 时种子阈值(见 validation())",
+    "dti_l_thresh": 0.4,
+    "dti_l_thresh_说明": "DTI=1 时生长候选阈值(见 validation())"
+  },
+  "data": {
+    "data_root": "F:\\datasets\\ATM22\\TrainBatch1\\after_yxz",
+    "file_path": "./data/base_dict.json",
+    "file_root": "./data",
+    "pred_path": "./data/pred_1",
+    "说明": "data_root=数据根目录, file_path=病例列表, file_root=数据子目录; pred_path=stage1 预测结果路径(难例定位来源)"
+  },
+  "paths": {
+    "model_savepath": "./saved_model/stage_two",
+    "online_savepath": "./data/online_hardmining_stage_two",
+    "log_savepath": "./LOG/log_stage_two.csv",
+    "tensorboard_logdir": "./LOG/stage_two_10_20_2_4",
+    "说明": "model_savepath=权重目录, online_savepath=难例缓存目录, log_savepath=训练日志, tensorboard_logdir=TensorBoard 目录"
+  },
+  "gpu": "0",
+  "gpu_说明": "CUDA_VISIBLE_DEVICES 指定的 GPU 编号",
+  "_saved_at": "2026-10-20 02:04:33"
+}

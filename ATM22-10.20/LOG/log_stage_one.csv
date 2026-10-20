@@ -1,0 +1,2 @@
+epoch,TD_mean,TD_std,BD_mean,BD_std,DSC_mean,DSC_std,Pre_mean,Pre_std,Sen_mean,Sen_std,Spe_mean,Spe_std,FPR_mean,FPR_std,FNR_mean,FNR_std
+99,71.2290,2.9929,70.3560,3.8256,92.0420,1.1033,94.8325,1.4240,89.4384,1.7998,99.9805,0.0086,0.0195,0.0086,10.5616,1.7998
