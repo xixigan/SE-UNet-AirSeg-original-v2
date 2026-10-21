@@ -132,9 +132,10 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
       最终权重 = (w_br + w_hm) * lamda + (1 - lamda), 再乘以 hard_mining,
       因此只有"与断点相关联的气道体素"保留权重(>1), 其余区域为 0。
 
-    输出(每个 case 一个 .npy):
-      savepath2: 权重图 w_br (float16, 与体数据同形状), 训练时按体素加权损失;
-      savepath3: 孤立断段骨架体素的坐标 np.where(br_skel==1)。
+    输出(每个 case 一个 .mha, 与 CT 同形状同几何):
+      savepath2: 权重图 w_br (float32 体数据), 训练时按体素加权损失;
+      savepath3: 孤立断段骨架 br_skel (uint8 二值体数据), 消费端读出后用
+                 np.where(br_skel==1) 现算断点坐标索引组。
 
     参数:
       data_root : 数据集根目录, mask 位于 data_root/mask/<name>mask_cut.mha
@@ -184,12 +185,20 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
         maxf = np.amax(f)   # 断点影响范围内的最大距离, 用作衰减归一化分母
         if np.max(maxf)==0:
             # 该 case 没有任何骨架断点(预测完整覆盖了中心线):
-            # 权重图和断段全 0, 直接落盘后处理下一个 case
-            # 注意: 此分支 savepath3 存的是全 0 体数据, 与正常分支存的坐标数组形状不一致
-            w_br=np.zeros(label.shape,dtype=np.float16)
-            br_skel=np.zeros(label.shape)
-            np.save(os.path.join(savepath2, name+'.npy'), w_br)
-            np.save(os.path.join(savepath3, name+'.npy'), br_skel)
+            # 权重图和断段骨架全 0, 直接落盘后处理下一个 case
+            # 统一存"体数据 .mha": 正常分支过去存 np.where 坐标、本分支存全 0 体,
+            # 两种形状不一致的隐患随 mha 化一并消除(消费端统一 np.where 现算坐标)
+            w_br = np.zeros(label.shape, dtype=np.float32)
+            br_skel = np.zeros(label.shape, dtype=np.uint8)
+            save_itk(w_br, origin, spacing, direction,
+                     os.path.join(savepath2, name + '.mha'))
+            save_itk(br_skel, origin, spacing, direction,
+                     os.path.join(savepath3, name + '.mha'))
+            # ===== 原 npy 写法(保留备查) =====
+            # w_br=np.zeros(label.shape,dtype=np.float16)
+            # br_skel=np.zeros(label.shape)
+            # np.save(os.path.join(savepath2, name+'.npy'), w_br)
+            # np.save(os.path.join(savepath3, name+'.npy'), br_skel)
             # 打印完整信息: 病例名 + 无断点说明 + 权重范围(原独立的 min/max 打印已合并至此)
             print('[save_weight_break] name:', name,
                   '| 该 case 无骨架断点, 跳过权重计算,',
@@ -241,10 +250,17 @@ def save_weight_break(data_root,savepath,savepath2,savepath3,file_path):
         # 背景与正常气道区域归 0, 训练时损失在这些体素上被放大
         w_br=w_br*hard_mining
 
-        # 权重图落盘: <case名>.npy, 与体数据同形状
-        np.save(os.path.join(savepath2, name+'.npy'), w_br)
-        # 断点坐标落盘: np.where 返回 (Z轴坐标数组, Y轴坐标数组, X轴坐标数组) 三元组
-        np.save(os.path.join(savepath3, name+'.npy'),np.where(br_skel==1))
+        # 权重图落盘: <case名>.mha, 与 CT 同形状同几何(计算保持 fp16 精度不变,
+        # 存盘升为 float32 以适配 SimpleITK, 数值无损)
+        save_itk(w_br.astype(np.float32), origin, spacing, direction,
+                 os.path.join(savepath2, name + '.mha'))
+        # 断点骨架落盘: 直接存 uint8 二值体数据(不再存 np.where 坐标三元组),
+        # 消费端(data.py AirwayHMData3)读出后 np.where(br_skel==1) 现算坐标索引组
+        save_itk(br_skel.astype(np.uint8), origin, spacing, direction,
+                 os.path.join(savepath3, name + '.mha'))
+        # ===== 原 npy 写法(保留备查): 权重 fp16 存 npy; 断点存 np.where 坐标三元组 =====
+        # np.save(os.path.join(savepath2, name+'.npy'), w_br)
+        # np.save(os.path.join(savepath3, name+'.npy'),np.where(br_skel==1))
         # 打印完整信息: 病例名 + 有断点说明 + 权重范围(原独立的 min/max 打印已合并至此)
         # 注意 min/max 是公式的结构性常数(min=0: 背景被 hard_mining 清零; max=2.4 封顶),
         # 各 case 相同属正常现象, case 间真正差异体现在非零体素的数量与分布上。

@@ -272,7 +272,7 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     hm_dataloader_batch_size = 2     # 第二遍难例 DataLoader 的 batch
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
-    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    val_batch_size_per_case_and_dataloader = 2   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu   # 必须在任何 .cuda() 之前设置才会生效
 
@@ -656,7 +656,7 @@ def train2(data_root,
     hm_dataloader_batch_size = 2     # 第二遍难例 DataLoader 的 batch
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
-    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    val_batch_size_per_case_and_dataloader = 2   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -987,7 +987,7 @@ def train(data_root,model_savepath,
     lr_gamma = 0.1                   # 衰减系数
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
-    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    val_batch_size_per_case_and_dataloader = 2   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -1219,9 +1219,10 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
         # Dataset.__getitem__: 每个 item 是整卷滑窗序列中的一个块:
         #   img_crop (2, val_cube_size, val_cube_size, val_cube_size) 双窗已堆好通道
         #   name 病例名字符串; pos (6,) = 该块在整卷中的坐标 [xl,xr,yl,yr,zl,zr]
-        # DataLoader(batch_size=val_batch_size_per_case_and_dataloader=1) 在最前套一维:
-        #   x=(1, 2, val_cube_size, val_cube_size, val_cube_size); name=1 元素列表; pos=(1, 6)
-        #   例: val_cube_size=128 -> x.shape = (1, 2, 128, 128, 128)
+        # DataLoader(batch_size=val_batch_size_per_case_and_dataloader) 在最前套一维:
+        #   x=(B, 2, val_cube_size, val_cube_size, val_cube_size); name=B 元素列表; pos=(B, 6)
+        #       其中 B = val_batch_size_per_case_and_dataloader(各阶段配置处定义, stage3 当前=2)
+        #   例: B=2, val_cube_size=128 -> x.shape = (2, 2, 128, 128, 128)
         # 与训练不同: 验证每 item 就是单块标准 5D 输入, 全程无 transpose(0,1) 还原操作
         for i, (x, name, pos) in enumerate(valid_dataloader):
             name = name[0]                    # 从 1 元素列表里取回病例名字符串
@@ -1522,7 +1523,7 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
     # ===== 验证超参数集中定义(便于统一调参与复现) =====
     val_cube_size = 128              # 验证滑窗块边长
     val_step = 64                    # 验证滑窗步长(重叠一半)
-    val_batch_size_per_case_and_dataloader = 1   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
+    val_batch_size_per_case_and_dataloader = 2   # 验证 Dataset 补齐基数(per_case) and DataLoader batch 必须相等，共用这一个变量
     num_workers = 0                  # DataLoader 子进程数，0=主进程读
 
     # Dataset 的 batch_size 仅是块数补齐基数，必须与 DataLoader 的 batch_size 相等(详见 SegValCropData.__init__)

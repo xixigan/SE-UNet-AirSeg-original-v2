@@ -438,8 +438,12 @@ class AirwayHMData(Dataset):
                                '.mha')
         label = sitk.GetArrayFromImage(label)
 
-        weight = np.load(
-            os.path.join(self.file_root, 'LIB_weight', name + '.npy'))
+        # LIB_weight 已由 npy 改为与 CT 同几何的 .mha(lib_weight.py 产出), 统一走 load_itk_image
+        weight, _, _, _ = load_itk_image(
+            os.path.join(self.file_root, 'LIB_weight', name + '.mha'))
+        # ===== 原 npy 读法(保留备查) =====
+        # weight = np.load(
+        #     os.path.join(self.file_root, 'LIB_weight', name + '.npy'))
             
         # 统一用 load_itk_image 读取 save_itk 写出的 3D 标量体数据
         # 不再需要旧 nibabel 4 维文件配套的 get_fdata()[0]
@@ -660,11 +664,19 @@ class AirwayHMData3(Dataset):
         label = sitk.ReadImage(self.data_root+'/mask/'+name+ 'mask_cut' + '.mha')
         label = sitk.GetArrayFromImage(label)
         r=0.6
-        weight = np.load(os.path.join(self.file_root, 'LIB_weight', name + '.npy'))
-        br_weight = np.load(os.path.join(self.BR_weight_path, name + '.npy'))
+        # LIB_weight/BR_weight 已 mha 化(与 CT 同几何), 统一走 load_itk_image
+        weight, _, _, _ = load_itk_image(os.path.join(self.file_root, 'LIB_weight', name + '.mha'))
+        br_weight, _, _, _ = load_itk_image(os.path.join(self.BR_weight_path, name + '.mha'))
 
         weight = weight +r* br_weight
-        br_skel = np.load(os.path.join(self.br_skel_path, name + '.npy'))
+        # br_skel 现在存的是 uint8 二值体数据, 读出后现算断点坐标索引组
+        # (crop() 的 loc_break 需要 np.where 三元组, 与产生端 weight_br.py 对齐)
+        br_skel_vol, _, _, _ = load_itk_image(os.path.join(self.br_skel_path, name + '.mha'))
+        br_skel = np.where(br_skel_vol == 1)
+        # ===== 原 npy 读法(保留备查): LIB/BR 权重读 fp16/fp16 npy, br_skel 直接是坐标三元组 =====
+        # weight = np.load(os.path.join(self.file_root, 'LIB_weight', name + '.npy'))
+        # br_weight = np.load(os.path.join(self.BR_weight_path, name + '.npy'))
+        # br_skel = np.load(os.path.join(self.br_skel_path, name + '.npy'))
         # 统一用 load_itk_image 读取 save_itk 写出的 3D 标量体数据,
         # 不再需要旧 nibabel 4 维文件配套的 get_fdata()[0]
         # 显式接收 origin/spacing/direction, 与全局读取惯例一致
@@ -864,7 +876,10 @@ class CropSegData(Dataset):
         img=img-1024
         label = sitk.ReadImage(self.data_root+'/mask/'+name+ 'mask_cut' + '.mha')
         label = sitk.GetArrayFromImage(label)
-        weight = np.load(os.path.join(self.file_root, 'LIB_weight', name+'.npy'))
+        # LIB_weight 已 mha 化(与 CT 同几何), 统一走 load_itk_image
+        weight, _, _, _ = load_itk_image(os.path.join(self.file_root, 'LIB_weight', name + '.mha'))
+        # ===== 原 npy 读法(保留备查) =====
+        # weight = np.load(os.path.join(self.file_root, 'LIB_weight', name+'.npy'))
 
         img, img2, label = self.process_imgmsk(img, label)
         # 加权图随 epoch 随机"锐化"：weight^(U(2,3)) 让高权重体素更突出，
