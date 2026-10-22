@@ -60,6 +60,9 @@ def process_img(data):
     return data, data2
 
 def save_gradients_tw(data_root,stage_load,file_root,savepath,file_path,layer=0,gpu='0',s1_epes=0):
+    # 【注意】file_root 形参在函数体内从未被使用(历史遗留, 保留仅为签名兼容);
+    # pred_1 实际只写入 savepath 目录(= train.py main 里的 pred1_path=<root_dir>/data/pred_1),
+    # validation 侧的读取路径已改为由调用方显式传 pred1_dir, 与本函数的写入位置对齐
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
     # 关键修复: nibabel 不会自动创建父目录, 若 ./data/pred_1 不存在会抛 FileNotFoundError
     os.makedirs(savepath, exist_ok=True)  # 递归创建输出目录, 已存在则跳过

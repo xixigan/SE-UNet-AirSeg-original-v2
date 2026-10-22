@@ -232,7 +232,9 @@ def save_data_online3(path, image, label, weight, skel,names, limits=1500):
             np.save(os.path.join(path, 'weight', names[i]), weight[i])
             np.save(os.path.join(path, 'skel', names[i]), skel[i].astype(np.int8))
 
-def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,br_skel_path,BR_weight_path,aug, DTI,start_model, start_epoch, file_path, file_root, gpu):
+def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,br_skel_path,BR_weight_path,aug, DTI,start_model, start_epoch, file_path, file_root, gpu, pred1_dir=None):
+    # 【修复-pred1路径】参数表末尾新增 pred1_dir(默认 None，旧的位置传参调用不受影响)，
+    # 透传给 validation 作难区掩码的读取目录，详见 docstring :param pred1_dir:
     """
     阶段 3 训练：在 stage2 结果之上专门修复“气道断点”。
 
@@ -246,6 +248,9 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
     :param online_savepath: 在线难例挖掘的磁盘缓存目录(每 epoch 重建)
     :param log_savepath  : 验证汇总 CSV 日志, 如 ./LOG/log_stage_three.csv
     :param pred2_path    : stage2 的预测结果目录(作为“已做对的区域”参考)
+    :param pred1_dir    : 【修复-pred1路径】stage1 预测目录(<root_dir>/data/pred_1)，
+                           供 validation 读难区掩码；原 validation 从只读 file_root 下找
+                           pred_1 与写入位置不符会报错，现由 main 显式传入
     :param aug           : 1=开启数据增强(随机翻转), 0=关闭
     :param DTI           : 1=验证时用双阈值后处理, 0=用固定 0.5 阈值
     :param start_model   : 初始权重所在目录(上一阶段 stage_two)
@@ -591,7 +596,9 @@ def train3(data_root, model_savepath, online_savepath, log_savepath, pred2_path,
         # '''
         print('')
         # 本 epoch 结束后在验证集上滑窗推理并计算全套指标(TD/BD/DSC/Pre/Sen/Spe)
-        TD_mean, BD_mean, loss_random, loss_hard=validation(data_root, model, valid_dataloader, ep, log_savepath, DTI,file_root,stage)
+        # 【修复-pred1路径】追加 pred1_dir=pred1_dir：透传 main 实参 pred1_path(<root_dir>/data/pred_1)，
+        # 难区掩码仍锚定 stage1 预测(口径与 stage2 一致，见 validation 内注释)
+        TD_mean, BD_mean, loss_random, loss_hard=validation(data_root, model, valid_dataloader, ep, log_savepath, DTI,file_root,stage, pred1_dir=pred1_dir)
         print('')
 
         # 累积历史指标供调度器判断趋势：调度器需要“最近几个 epoch”的对比，故用 list 保存
@@ -938,7 +945,10 @@ def train2(data_root,
 
         print('')
         # stage2 每个 epoch 都验证（与 stage1 只在最后一个 epoch 验证不同）
-        TD_mean, BD_mean, loss_random, loss_hard=validation(data_root,model, valid_dataloader, ep, log_savepath, DTI, file_root,stage)
+        # 【修复-pred1路径】追加 pred1_dir=pred_path：train2 的 pred_path 形参就是 main 传入的
+        # pred1_path(<root_dir>/data/pred_1)，与 save_gradients_tw 写入位置一致(原调用未传，
+        # validation 会回退到 file_root/pred_1 而找不到文件):
+        TD_mean, BD_mean, loss_random, loss_hard=validation(data_root,model, valid_dataloader, ep, log_savepath, DTI, file_root,stage, pred1_dir=pred_path)
         print('')
 
         val_td_list.append(TD_mean)
@@ -1188,9 +1198,18 @@ def train(data_root,model_savepath,
     writer.close()   # 训练结束统一关闭 TensorBoard writer(整个 run 只生成一套事件文件)
     return max_epoches
 
-def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_root,stage):
+def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_root,stage, pred1_dir=None):
     """:return: (TD均值, BD均值, 全体素Dice均值, 难区域Dice均值)
+
+    【修复-pred1路径】pred1_dir = stage1 预测 .mha 所在目录，即 main 里的
+    pred1_path = <root_dir>/data/pred_1（save_gradients_tw 的实际写入位置）。
+    原代码用只读工件目录 file_root 拼路径(file_root/pred_1)，与写入位置不符，
+    stage2/3 验证与 DTI 复验会在第一个病例就抛 RuntimeError(file not exist)。
+    传 None 时回退旧路径，保持独立调用本函数的向后兼容(stage=1 从不读它)。
     """
+    # 【修复-pred1路径】None 时回退旧路径(原行为)；调用方应显式传 pred1_path
+    if pred1_dir is None:
+        pred1_dir = os.path.join(file_root, 'pred_1')
     # 关键修复: 验证属于推理阶段, 必须切到 eval()。
     # 本网络 SE_UNet.batchnorm=False, 归一化全用 InstanceNorm3d(train/eval 行为一致),
     # 所以真正的问题出在 DropLayer: 它的 forward 里 if self.training 会随机丢弃 30% 通道,
@@ -1272,7 +1291,11 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
                 if stage!=1:
                     # 统一用 load_itk_image 读取 save_itk 写出的 3D 标量体数据,
                     # 显式接收 origin/spacing/direction, 与全局读取惯例一致
-                    pred1, origin, spacing, direction = load_itk_image(os.path.join(file_root, 'pred_1', name + '.mha'))
+                    # 【修复-pred1路径】改从调用方传入的 pred1_dir 读取
+                    # (原行保留: 读的是只读工件目录 file_root/pred_1，
+                    #  与 save_gradients_tw 实际写入的 <root_dir>/data/pred_1 不一致):
+                    # pred1, origin, spacing, direction = load_itk_image(os.path.join(file_root, 'pred_1', name + '.mha'))
+                    pred1, origin, spacing, direction = load_itk_image(os.path.join(pred1_dir, name + '.mha'))
 
                 # 每个病例的整卷累加器：pred 存各体素概率之和，pred_num 存被覆盖次数，
                 # 最后相除得到重叠区平均(滑窗融合)，避免边界拼接的接缝
@@ -1315,6 +1338,26 @@ def validation(data_root,model, valid_dataloader, epoch,log_savepath,DTI,file_ro
         if stage!=1:
             # “难区域”指标：用 stage1 预测的补集 (1-pred1) 屏蔽掉已做对的区域，
             # 只考察 stage1 漏掉的部分，衡量级联后段的增量价值
+            #
+            # ——— 本段是【末病例】的难区结算，与循环内 L1250-1251 那一对完全同源，
+            #     只是作用对象不同（循环内结算第 1~N-1 例，这里补第 N 例）。
+            # 参与运算三个量的状态（都是逐体素 0/1，不是概率）：
+            #   pred  : 当前阶段模型的整卷预测，刚在上面按 DTI 分支融合+二值化完（0/1, float64）
+            #   pred1 : stage1 模型的整卷二值预测（0/1, uint8），在病例边界处从 pred_1 目录读入
+            #   label : 本例金标准掩码（0/1）
+            # 掩码 (1 - pred1) 把整卷切成两段：
+            #   pred1==1 的区域 -> 掩码为 0，stage1 已判为气道的部分【不计入本轮成绩】
+            #   pred1==0 的区域 -> 掩码为 1，含"stage1 真漏检的气道"+"全部背景"，
+            #                      即当前阶段模型的增量战场
+            # 逐元素相乘后：
+            #   hard_pred  = 当前模型在掩码区新预测成气道的体素（捡回来的真气道 + 乱捡的假阳）
+            #   hard_label = 掩码区里真正该捡回的气道体素（= stage1 的漏检集合，即"考题"）
+            # 下一行入列的难区 Dice = 2*|hard_pred ∩ hard_label| / (|hard_pred|+|hard_label|)，
+            # 衡量"stage1 漏掉的，当前模型找回了多少"；它与同入列的全局 Dice 之差 diff
+            # 供 update_scheduler 调节 hard_ratio（diff 大=难区拖后腿->多采难例，反之回归均衡）。
+            # 注意：stage3 也统一用 pred1 而非 pred2 做掩码——尺子固定锚在 stage1 漏检集上，
+            # 这样 stage2 与 stage3 的难区 Dice 同基线、可直接比较；pred_2 只进训练数据线
+            # （断点采样/BR 加权，见 train3），不参与指标口径。
             hard_pred = pred * (1 - pred1)
             hard_label= label * (1 - pred1)
 
@@ -1494,7 +1537,7 @@ def valid(log_path):
     print('第', records[best]['epoch'], '个epoch验证效果最佳，分数为', max(SCORE))
     return records[best]['epoch']
 
-def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dtiep, gpu='0', stage=0):
+def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dtiep, gpu='0', stage=0, pred1_dir=None):
     """
     DTI 复验：用【双阈值后处理】口径重新评估某个已训好的 epoch，单独写一份日志。
 
@@ -1503,6 +1546,9 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
 
     :param dti_log_savepath: 独立日志路径(如 log_stage_three_dti.csv)，绝不能传主日志
     :param dtiep           : 要复验的 epoch 号(即权重文件名里的数字)
+    :param pred1_dir       : 【修复-pred1路径】stage1 预测目录(<root_dir>/data/pred_1)，
+                             透传给 validation；stage=2/3 复验都要读它算难区指标，
+                             不传则回退旧路径 file_root/pred_1(会因文件不存在报错)
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -1579,7 +1625,8 @@ def dtival(model_savepath, dti_log_savepath, data_root, file_path, file_root, dt
     DTI=1
     # 注意这里传的是 dti_log_savepath 而不是 log_savepath: validation() 内部用追加模式(open(...,'a'))写日志,
     # 传独立文件才能让 DTI=1 口径的指标与 DTI=0 的训练日志物理隔离, 两套口径也不会混在同一份文件里难以区分
-    TD_mean, BD_mean, val_loss_random, val_loss_hard=validation(data_root,model, valid_dataloader, dtiep, dti_log_savepath, DTI, file_root, stage)
+    # 【修复-pred1路径】追加 pred1_dir=pred1_dir：DTI 复验 stage=2/3 均需读 stage1 预测做难区掩码
+    TD_mean, BD_mean, val_loss_random, val_loss_hard=validation(data_root,model, valid_dataloader, dtiep, dti_log_savepath, DTI, file_root, stage, pred1_dir=pred1_dir)
     # print((time.time()-starttime)/60,'mins')
     torch.cuda.empty_cache()
 
@@ -1633,7 +1680,7 @@ if __name__ == '__main__':
     model_savepath = os.path.join(model_root, 'stage_one')
     log_savepath = os.path.join(log_dir, 'log_stage_one.csv')
     aug = 1 
-    DTI = 1 
+    DTI = 0 
     s1_epes=train(data_root, model_savepath, log_savepath, aug, DTI, file_path,file_root, gpu)
 
     ######################################STAGE_1_PRED#################################################
@@ -1671,14 +1718,18 @@ if __name__ == '__main__':
     log_savepath = os.path.join(log_dir, 'log_stage_three.csv')
     aug = 1
     DTI = 0
+    # 【修复-pred1路径】追加 pred1_dir=pred1_path：train3 的验证要读 stage1 预测做难区掩码，
+    # 必须给到实际写入目录 <root_dir>/data/pred_1(即上方 STAGE_1_PRED 段的 pred1_path)。
+    # 注意形参名已统一为 pred1_dir(与 validation/dtival 一致)，实参仍用 main 局部变量 pred1_path
     train3(data_root,model_savepath, online_savepath, log_savepath,pred2_path,br_skel_path,BR_weight_path,aug, DTI, 
-           start_model, start_epoch, file_path, file_root, gpu)
+           start_model, start_epoch, file_path, file_root, gpu, pred1_dir=pred1_path)
     
     ###### DTI 复验：分别用 DTI=1 口径重新评估 stage2 与 stage3 的最佳 epoch
     # 注意两行用了不同的选模型公式：stage2 用 valid_recall(偏召回)，stage3 用 valid(偏准确)
     best_epoch = valid_recall( os.path.join(log_dir, 'log_stage_two.csv'))
-    dtival( os.path.join(model_root, 'stage_two'), os.path.join(log_dir, 'log_stage_two_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=2)
+    # 【修复-pred1路径】两处 dtival 均追加 pred1_dir=pred1_path(stage=2/3 复验都要读难区掩码)
+    dtival( os.path.join(model_root, 'stage_two'), os.path.join(log_dir, 'log_stage_two_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=2, pred1_dir=pred1_path)
 
     best_epoch = valid( os.path.join(log_dir, 'log_stage_three.csv'))
-    dtival(os.path.join(model_root, 'stage_three'), os.path.join(log_dir, 'log_stage_three_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=3)
+    dtival(os.path.join(model_root, 'stage_three'), os.path.join(log_dir, 'log_stage_three_dti.csv'),data_root,file_path,file_root,best_epoch,gpu,stage=3, pred1_dir=pred1_path)
 

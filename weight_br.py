@@ -332,6 +332,9 @@ if __name__ == '__main__':
     savepath='./data/pred_2'
     file_root='./data'
     data_root='/mnt/yby/AFTER_PREPROCESS'
+    # 【注意】本 __main__ 块是原作者遗留的独立调试入口, 不参与 train.py 的真实流水线(main() 会带正确参数调用)。
+    # 此处第 4/5 个位置参数对应的形参实为 file_path(base_dict.json 的完整路径), 传 './data' 目录单独跑会报错;
+    # 且路径全部写死为旧版目录布局('./data/pred_2' 等), 与 root_dir/file_root 拆分后的布局不一致。
     save_s2_pred(data_root,whichepoch, savepath, file_root, gpu)
 
 
