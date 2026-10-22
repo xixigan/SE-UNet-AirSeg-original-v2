@@ -10,15 +10,44 @@ import pylab
 from util import *
 
 def crop_origin_yxz(origin, spacing_yxz, direction_yxz, start_yxz):
-    """将 YXZ 数组裁剪起点换算为 ITK 的 XYZ 索引，并计算裁剪后的物理原点。"""
+    """将 YXZ 数组裁剪起点换算为物理 XYZ 体素数，并计算裁剪后的物理原点。
+
+    注意各输入的内部顺序不同，还原置换也不同：
+      spacing_yxz = (pz, px, py)，ZXY 序 -> 还原 XYZ 用 [1,2,0]
+      direction_yxz 列 = (Z, X, Y)，ZXY 序 -> 还原用 [:,[1,2,0]]
+      start_yxz   = (iy, ix, iz)，数组 YXZ 序 -> 还原 XYZ 体素数须用 [1,0,2]
+                    (旧代码误用 [1,2,0]，导致裁剪原点 Y/Z 分量互换)
+    origin 是物理点，分量恒为世界 (x,y,z)，不随轴序重排，直接使用。
+    已对照 SimpleITK 官方 TransformIndexToPhysicalPoint 实测等价。
+    """
     direction_xyz = np.array(direction_yxz).reshape(3, 3)[:,[1,2,0]]
     spacing_xyz = np.array([spacing_yxz[1], spacing_yxz[2], spacing_yxz[0]])
-    start_xyz = np.array([start_yxz[1], start_yxz[2], start_yxz[0]])
+    start_xyz = np.array([start_yxz[1], start_yxz[0], start_yxz[2]])
     origin_xyz = np.array(origin)
     cropped_origin = origin_xyz + direction_xyz @ (spacing_xyz * start_xyz)
     return tuple(cropped_origin.tolist())
     
+def transpose_zyx_image(image: sitk.Image) -> sitk.Image:
+    """
+    ZYX 数组 -> YXZ 数组：与 convert_zyx_to_yxz.py 中同名函数同一形式，
+    直接用 sitk.PermuteAxes 让 SimpleITK 内部同步处理三件事——
+      数组:      (sz, sy, sx) -> (sy, sx, sz)   (等价 numpy transpose(1,2,0))
+      direction: 列随轴循环平移 (old[:, [2, 0, 1]], 即 ZXY)
+      spacing:   (px, py, pz) -> (pz, px, py)
+      origin:    不变
+    转完后 GetArrayFromImage 得到的就是本项目约定的 YXZ 数组序，
+    且 GetSpacing/GetDirection 已是"按 YXZ 存放"的配套值，
+    与下游 crop_origin_yxz / save_itk 的 YXZ 约定严格对齐。
+    """
+    # 防御: 只支持标量 3D 体数据(CT/mask)，多分量或 2D 直接报错
+    if image.GetDimension() != 3 or image.GetNumberOfComponentsPerPixel() != 1:
+        raise ValueError("Only scalar 3D images are supported.")
+    # (2, 0, 1): 新数组的第 0 轴取旧第 2 轴... 与 convert 脚本验证过的等价写法
+    return sitk.PermuteAxes(image, (2, 0, 1))
+
+
 def load_itk_image(filename):
+    """纯读取: 返回数组(原始 ZYX 轴序)与 origin/spacing/direction，不做任何转置。"""
     itkimage = sitk.ReadImage(filename)
     image = sitk.GetArrayFromImage(itkimage)
     origin = itkimage.GetOrigin()
@@ -42,7 +71,15 @@ def savenpy(data_path, prep_folder, format='nii.gz', mode='prepro', multides=Tru
     name = os.path.basename(data_path).split('data.nii')[0]# 取病例名, 如 'CASE002'
     assert (os.path.exists(data_path) is True)
     if format == 'nii.gz':
-        case_pixels, origin, spacing, direction = load_itk_image(data_path)
+        # 先正常读取原始 ZYX 数据，再立即转成 YXZ 数组序，之后全部按 YXZ 处理。
+        # PermuteAxes 会同步平移 spacing/direction，使三者与 YXZ 数组配套，
+        # 与下游 crop_origin_yxz / save_itk 的 YXZ 约定严格对齐。
+        itkimage = sitk.ReadImage(data_path)
+        itkimage = transpose_zyx_image(itkimage)          # ZYX -> YXZ
+        case_pixels = sitk.GetArrayFromImage(itkimage)    # 形状 (sy, sx, sz)
+        origin = itkimage.GetOrigin()
+        spacing = itkimage.GetSpacing()                   # 已随轴平移: (pz, px, py)
+        direction = itkimage.GetDirection()               # 列已循环平移: ZXY
         # if spacing[0] != spacing[1] and spacing[1] == spacing[2]:
         #     px, py, pz = spacing[1], spacing[2], spacing[0]
         #     spacing = (px, py, pz)
@@ -130,7 +167,13 @@ def cutmask(data_path, prep_folder):
     # name = data_path.split('CASE')[-1].split('mask')[0]
     name = os.path.basename(data_path).split('CASE')[-1].split('mask')[0]
     assert (os.path.exists(data_path) is True)
-    mask_p, origin, spacing, direction = load_itk_image(data_path)
+    # 与 savenpy 一致: 先读原始 ZYX，再转 YXZ，box 切片与保存均按 YXZ 口径
+    itkimage = sitk.ReadImage(data_path)
+    itkimage = transpose_zyx_image(itkimage)          # ZYX -> YXZ
+    mask_p = sitk.GetArrayFromImage(itkimage)         # 形状 (sy, sx, sz)
+    origin = itkimage.GetOrigin()
+    spacing = itkimage.GetSpacing()
+    direction = itkimage.GetDirection()
     # save box (image original shape and cropped window region)
     box = np.load(os.path.join(prep_folder[:-4]+'data','CASE'+name+'_box.npy'),allow_pickle=True)
     # mask_p = large_connected_domain(mask_p)
