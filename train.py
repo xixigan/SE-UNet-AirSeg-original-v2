@@ -1655,9 +1655,9 @@ if __name__ == '__main__':
     #   <root_dir>/data/                              流水线中间产物(pred_1/pred_2/BR_weight/br_skel/online_hardmining)
     # 输入侧(--data_root 预处理数据、--file_root 只读工件 base_dict.json/skeleton/tree_parse/LIB_weight)不受 --root_dir 影响
     parser = argparse.ArgumentParser(description='SE-UNet 三阶段级联训练')
-    parser.add_argument('--root_dir', default='./run/',
+    parser.add_argument('--root_dir', default='./run/ATM22_140+10',
                         help='总输出根目录：权重/日志/中间产物全部生成在该目录下(默认当前目录)')
-    parser.add_argument('--data_root', default=r'F:\datasets\ATM22\TrainBatch1\after_yxz',
+    parser.add_argument('--data_root', default=r'F:\datasets\ATM22\TrainBatch1\after',
                         help='预处理后数据根目录(含 data/ 与 mask/ 子目录)')
     parser.add_argument('--file_root', default='./data',
                         help='只读工件根目录：base_dict.json、skeleton、tree_parse、LIB_weight 等')

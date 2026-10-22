@@ -65,4 +65,4 @@ def save_lib_weight(label_path, save_path):
         
 if __name__ == '__main__':
 
-    save_lib_weight(r'F:\datasets\ATM22\TrainBatch1\after_yxz\mask', './data/LIB_weight')
+    save_lib_weight(r'F:\datasets\ATM22\TrainBatch1\after\mask', './data/LIB_weight')

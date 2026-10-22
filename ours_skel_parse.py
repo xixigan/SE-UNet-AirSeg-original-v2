@@ -1126,7 +1126,9 @@ class Topology_Tree:
     #   因此只有调用方传入"按 numpy 轴排好的间距"（即 spacing 反序后的 px,py,pz，
     #   见 tree_parsing.py 的 px,py,pz = spacing[2],spacing[1],spacing[0]）时，逐轴配对才正确；
     #   若直接传 GetSpacing() 原序，各向异性数据会把 axis0/axis2 的间距互换（axis1 恒对）。
-    #   佐证：preprocessing.crop_origin_yxz 的 [1,2,0] 循环置换正是 YXZ 数组→ITK 轴的正确映射。
+    #   佐证：preprocessing.crop_origin_yxz 中 ZXY 序的 spacing/direction 用 [1,2,0] 还原物理 XYZ，
+    #   而 YXZ 数组序的 start 索引须用 [1,0,2]（两者内部顺序不同、置换不同；旧版曾误对 start 也
+    #   用 [1,2,0] 致裁剪原点 Y/Z 互换，已修复，对照验证见 verify_crop_origin_yxz.py）。
     # 维度：B (N,3) int -> B_resize (N,3) float32；Bi_resize 中 start/end 是 [x,y,z] 列表，
     #       member 是 list[list]，转成 (M,3) 数组放缩后再 tolist() 回写。
     # 注意：只改坐标不改拓扑，Bi_resize 与 Bi **同序同长度**，所以下游能用分支号 k 直接索引 Bi_resize[k-1]。
